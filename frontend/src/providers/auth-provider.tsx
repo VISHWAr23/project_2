@@ -24,25 +24,57 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     // Check if user session exists on initial mount
     const checkAuth = async () => {
-      const token = Cookies.get('auth_token');
-      const storedUser = Cookies.get('auth_user');
+      let token = Cookies.get('auth_token');
+      let storedUser = Cookies.get('auth_user');
 
-      if (token && storedUser) {
+      if (!token && typeof window !== 'undefined') {
+        token = localStorage.getItem('auth_token') || undefined;
+      }
+      if (!storedUser && typeof window !== 'undefined') {
+        storedUser = localStorage.getItem('auth_user') || undefined;
+      }
+
+      if (token) {
+        if (storedUser) {
+          try {
+            setUser(JSON.parse(storedUser));
+          } catch {
+            // Ignore parse error
+          }
+        }
+
         try {
-          // Parse stored user first for instant UI response
-          setUser(JSON.parse(storedUser));
-
-          // Then verify with backend /auth/me
+          // Verify with backend /auth/me
           const res = await apiClient.get<User>('/auth/me');
           const currentUser = res.data;
           setUser(currentUser);
-          Cookies.set('auth_user', JSON.stringify(currentUser), { expires: 7 });
-        } catch {
-          // Token is invalid/expired
-          Cookies.remove('auth_token');
-          Cookies.remove('auth_user');
-          setUser(null);
+          const isProduction = process.env.NODE_ENV === 'production';
+          const cookieOptions = {
+            expires: 7,
+            path: '/',
+            secure: isProduction,
+            sameSite: 'lax' as const,
+          };
+          Cookies.set('auth_token', token, cookieOptions);
+          Cookies.set('auth_user', JSON.stringify(currentUser), cookieOptions);
+          if (typeof window !== 'undefined') {
+            localStorage.setItem('auth_token', token);
+            localStorage.setItem('auth_user', JSON.stringify(currentUser));
+          }
+        } catch (err: any) {
+          // Only clear session if explicitly unauthorized (401)
+          if (err?.response?.status === 401) {
+            Cookies.remove('auth_token', { path: '/' });
+            Cookies.remove('auth_user', { path: '/' });
+            if (typeof window !== 'undefined') {
+              localStorage.removeItem('auth_token');
+              localStorage.removeItem('auth_user');
+            }
+            setUser(null);
+          }
         }
+      } else {
+        setUser(null);
       }
       setIsLoading(false);
     };
@@ -54,29 +86,44 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const res = await apiClient.post<AuthResponse>('/auth/login', credentials);
     const data = res.data;
 
-    // Set cookie with security flags
+    // Set cookie with root path and lax sameSite
     const isProduction = process.env.NODE_ENV === 'production';
-    Cookies.set('auth_token', data.accessToken, {
+    const cookieOptions = {
       expires: 7,
-      secure: isProduction, // HTTPS only in production
-      sameSite: 'strict', // CSRF protection
-      // Note: httpOnly cannot be set from JS, should be set by backend in production
-    });
-    Cookies.set('auth_user', JSON.stringify(data.user), {
-      expires: 7,
+      path: '/',
       secure: isProduction,
-      sameSite: 'strict',
-    });
+      sameSite: 'lax' as const,
+    };
+
+    Cookies.set('auth_token', data.accessToken, cookieOptions);
+    Cookies.set('auth_user', JSON.stringify(data.user), cookieOptions);
+
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem('auth_token', data.accessToken);
+        localStorage.setItem('auth_user', JSON.stringify(data.user));
+      } catch {
+        // Ignore localStorage quota errors
+      }
+    }
 
     setUser(data.user);
     return data.user;
   };
 
   const logout = () => {
-    Cookies.remove('auth_token');
-    Cookies.remove('auth_user');
+    Cookies.remove('auth_token', { path: '/' });
+    Cookies.remove('auth_user', { path: '/' });
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.removeItem('auth_token');
+        localStorage.removeItem('auth_user');
+      } catch {
+        // Ignore errors
+      }
+    }
     setUser(null);
-    router.push('/login');
+    router.replace('/login');
   };
 
   return (

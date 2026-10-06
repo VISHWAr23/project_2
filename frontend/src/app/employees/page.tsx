@@ -1,6 +1,6 @@
-// User instruction: "Phase 3: Employee Management - Create the Employee Management UI using the existing frontend architecture and components. Admin routes: /employees"
-// Importers/callers: Next.js App Router
-// Affected API: /api/employees (list, create, update, updateStatus)
+// User instruction: "10. Employees (/employees, /employees/[id]): Employee directory (Admin only: Search, Filter by role/status, Pagination, Employee table with name, email, role, phone, active status), Employee detail (Employee profile, Assigned customers list, Orders created by employee, Visits logged, Incentives earned, Edit employee, Toggle active status)."
+// Importers/callers: Next.js App Router (/employees), AppShell, Sidebar navigation
+// Affected API: GET /api/employees, POST /api/employees, PATCH /api/employees/:id, PATCH /api/employees/:id/status
 // Data schemas: Employee, CreateEmployeePayload, UpdateEmployeePayload, EmployeeListResponse
 
 'use client';
@@ -10,8 +10,12 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { employeesApi } from '@/lib/api/employees';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
+import { PageHeader } from '@/components/ui/page-header';
+import { StatusBadge } from '@/components/ui/status-badge';
+import { StatCard } from '@/components/ui/stat-card';
+import { EmptyState } from '@/components/ui/empty-state';
 import {
   Dialog,
   DialogContent,
@@ -37,17 +41,35 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { Plus, Search, UserCheck, UserX, Edit2 } from 'lucide-react';
+import {
+  Plus,
+  Search,
+  UserCheck,
+  UserX,
+  Edit2,
+  Users,
+  ShieldCheck,
+  Phone,
+  RefreshCw,
+  ChevronLeft,
+  ChevronRight,
+  ShieldAlert,
+  ArrowUpRight,
+} from 'lucide-react';
 import { useRouter } from 'next/navigation';
+import { useAuth } from '@/providers/auth-provider';
 import type {
   CreateEmployeePayload,
   UpdateEmployeePayload,
   Employee,
 } from '@/types/employee.types';
+import { formatDate } from '@/lib/format';
 
 export default function EmployeesPage() {
   const router = useRouter();
   const queryClient = useQueryClient();
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'ADMIN';
 
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
@@ -69,7 +91,7 @@ export default function EmployeesPage() {
 
   const limit = 10;
 
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, error, isFetching } = useQuery({
     queryKey: ['employees', page, search, statusFilter],
     queryFn: () =>
       employeesApi.list({
@@ -78,6 +100,7 @@ export default function EmployeesPage() {
         search: search || undefined,
         isActive: statusFilter === 'all' ? undefined : statusFilter === 'active',
       }),
+    enabled: !!user && isAdmin,
   });
 
   const createMutation = useMutation({
@@ -174,323 +197,508 @@ export default function EmployeesPage() {
     setConfirmOpen(true);
   };
 
+  const getInitials = (name: string) => {
+    return name
+      .split(' ')
+      .map((n) => n[0])
+      .slice(0, 2)
+      .join('')
+      .toUpperCase();
+  };
+
+  if (!isAdmin) {
+    return (
+      <EmptyState
+        icon={ShieldAlert}
+        title="Admin Access Required"
+        description="The team directory and employee management settings are restricted to administrative accounts."
+        action={{
+          label: 'Go to Dashboard',
+          onClick: () => router.push('/dashboard'),
+        }}
+      />
+    );
+  }
+
+  const totalEmployees = data?.total || 0;
+  const activeCount = data?.items?.filter((e) => e.isActive).length || 0;
+
   return (
-    <div className="min-h-screen bg-gray-50 p-6">
-      <div className="mx-auto max-w-7xl space-y-6">
-        <div className="flex items-center justify-between">
-          <h1 className="text-3xl font-bold text-gray-900">Employee Management</h1>
-          <Button onClick={() => setCreateOpen(true)}>
-            <Plus className="mr-2 h-4 w-4" />
-            Add Employee
-          </Button>
-        </div>
+    <div className="space-y-6">
+      <PageHeader
+        title="Team & Employees"
+        subtitle="Manage sales executives, field personnel, permissions, and operational status."
+      >
+        <Button
+          onClick={() => setCreateOpen(true)}
+          className="gap-1.5 text-xs bg-primary text-primary-foreground hover:bg-primary/90 font-semibold"
+        >
+          <Plus className="size-4" />
+          <span>Add Employee</span>
+        </Button>
+      </PageHeader>
 
-        <Card>
-          <CardHeader>
-            <CardTitle>Filters</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex gap-4">
-              <div className="flex-1">
-                <Label htmlFor="search">Search</Label>
-                <div className="relative">
-                  <Search className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
-                  <Input
-                    id="search"
-                    placeholder="Search by name, email, or phone"
-                    value={search}
-                    onChange={(e) => {
-                      setSearch(e.target.value);
-                      setPage(1);
-                    }}
-                    className="pl-10"
-                  />
-                </div>
-              </div>
-              <div className="w-48">
-                <Label htmlFor="status">Status</Label>
-                <Select
-                  value={statusFilter}
-                  onValueChange={(v: 'all' | 'active' | 'inactive') => {
-                    setStatusFilter(v);
-                    setPage(1);
-                  }}
-                >
-                  <SelectTrigger id="status">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All</SelectItem>
-                    <SelectItem value="active">Active</SelectItem>
-                    <SelectItem value="inactive">Inactive</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+      {/* Metric Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <StatCard
+          title="Total Personnel"
+          value={totalEmployees}
+          icon={Users}
+          description="Registered team members"
+        />
+        <StatCard
+          title="Active On-Field Staff"
+          value={activeCount}
+          icon={UserCheck}
+          description="Active accounts in current view"
+        />
+        <StatCard
+          title="Admin & Leadership"
+          value={data?.items?.filter((e) => e.role === 'ADMIN').length || 0}
+          icon={ShieldCheck}
+          description="Privileged administrators"
+        />
+      </div>
+
+      {/* Search & Filter Toolbar */}
+      <Card className="bg-card border-border">
+        <CardContent className="p-4">
+          <div className="flex flex-col sm:flex-row items-center gap-3">
+            <div className="relative flex-1 w-full">
+              <Search className="absolute left-3 top-2.5 size-4 text-muted-foreground" />
+              <Input
+                id="search"
+                placeholder="Search staff by name, email, or direct phone..."
+                value={search}
+                onChange={(e) => {
+                  setSearch(e.target.value);
+                  setPage(1);
+                }}
+                className="pl-9 h-9 text-xs bg-background border-border"
+              />
             </div>
-          </CardContent>
-        </Card>
+            <div className="w-full sm:w-48">
+              <Select
+                value={statusFilter}
+                onValueChange={(v: 'all' | 'active' | 'inactive') => {
+                  setStatusFilter(v);
+                  setPage(1);
+                }}
+              >
+                <SelectTrigger id="status" className="h-9 text-xs bg-background border-border">
+                  <SelectValue placeholder="Status Filter" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Personnel</SelectItem>
+                  <SelectItem value="active">Active Only</SelectItem>
+                  <SelectItem value="inactive">Inactive Only</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
+      {/* Directory Table */}
+      <Card className="bg-card border-border overflow-hidden">
         {isLoading && (
-          <Card>
-            <CardContent className="py-12 text-center text-gray-500">Loading employees...</CardContent>
-          </Card>
+          <div className="flex flex-col items-center justify-center p-12 text-center space-y-3">
+            <RefreshCw className="size-8 animate-spin text-primary" />
+            <p className="font-semibold text-foreground text-sm">Loading staff directory...</p>
+          </div>
         )}
 
         {error && (
-          <Card>
-            <CardContent className="py-12 text-center text-red-600">
-              Failed to load employees. Please try again.
-            </CardContent>
-          </Card>
+          <div className="p-8">
+            <EmptyState
+              icon={Users}
+              title="Failed to Load Employees"
+              description="Could not synchronize employee list. Please check your network connection."
+              action={{
+                label: 'Retry',
+                onClick: () => queryClient.invalidateQueries({ queryKey: ['employees'] }),
+              }}
+            />
+          </div>
         )}
 
-        {data && data.items.length === 0 && (
-          <Card>
-            <CardContent className="py-12 text-center text-gray-500">
-              No employees found. Add your first employee to get started.
-            </CardContent>
-          </Card>
+        {!isLoading && !error && data && data.items.length === 0 && (
+          <div className="p-8">
+            <EmptyState
+              icon={Users}
+              title="No Employees Found"
+              description={
+                search || statusFilter !== 'all'
+                  ? 'No employees match your active filter criteria. Try adjusting your search query.'
+                  : 'Start onboarding your field sales executives and team members.'
+              }
+              action={{
+                label: 'Add First Employee',
+                onClick: () => setCreateOpen(true),
+              }}
+            />
+          </div>
         )}
 
-        {data && data.items.length > 0 && (
-          <Card>
-            <CardContent className="p-0">
-              <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead className="border-b bg-gray-50">
-                    <tr>
-                      <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-                        Name
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-                        Email
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-                        Phone
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-                        Status
-                      </th>
-                      <th className="px-6 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">
-                        Actions
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y bg-white">
-                    {data.items.map((employee) => (
-                      <tr key={employee._id} className="hover:bg-gray-50">
-                        <td className="whitespace-nowrap px-6 py-4 text-sm font-medium text-gray-900">
-                          {employee.name}
-                        </td>
-                        <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-500">
-                          {employee.email}
-                        </td>
-                        <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-500">
-                          {employee.phone}
-                        </td>
-                        <td className="whitespace-nowrap px-6 py-4 text-sm">
-                          {employee.isActive ? (
-                            <span className="inline-flex items-center rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-medium text-green-800">
-                              Active
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center rounded-full bg-red-100 px-2.5 py-0.5 text-xs font-medium text-red-800">
-                              Inactive
-                            </span>
-                          )}
-                        </td>
-                        <td className="whitespace-nowrap px-6 py-4 text-right text-sm">
-                          <div className="flex justify-end gap-2">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => router.push(`/employees/${employee._id}`)}
-                            >
-                              View
-                            </Button>
-                            <Button variant="ghost" size="sm" onClick={() => openEdit(employee)}>
-                              <Edit2 className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => openConfirm(employee)}
-                            >
-                              {employee.isActive ? (
-                                <UserX className="h-4 w-4 text-red-600" />
-                              ) : (
-                                <UserCheck className="h-4 w-4 text-green-600" />
-                              )}
-                            </Button>
+        {!isLoading && !error && data && data.items.length > 0 && (
+          <div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead className="bg-muted/30 border-b border-border text-muted-foreground uppercase tracking-wider font-semibold">
+                  <tr>
+                    <th className="py-3 px-4">Employee</th>
+                    <th className="py-3 px-3">Role</th>
+                    <th className="py-3 px-3">Contact Information</th>
+                    <th className="py-3 px-3">Account Status</th>
+                    <th className="py-3 px-3">Joined Date</th>
+                    <th className="py-3 px-4 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border/60">
+                  {data.items.map((emp) => (
+                    <tr
+                      key={emp._id}
+                      className="hover:bg-muted/30 transition-colors group cursor-pointer"
+                      onClick={() => router.push(`/employees/${emp._id}`)}
+                    >
+                      <td className="py-3.5 px-4 whitespace-nowrap">
+                        <div className="flex items-center gap-3">
+                          <div className="size-8 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center text-primary font-bold text-xs shrink-0">
+                            {getInitials(emp.name)}
                           </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                          <div>
+                            <p className="font-semibold text-foreground group-hover:text-primary transition-colors flex items-center gap-1">
+                              {emp.name}
+                              <ArrowUpRight className="size-3 opacity-0 group-hover:opacity-100 transition-opacity text-primary" />
+                            </p>
+                            <p className="text-[11px] text-muted-foreground font-mono">{emp.email}</p>
+                          </div>
+                        </div>
+                      </td>
 
-              {data.totalPages > 1 && (
-                <div className="flex items-center justify-between border-t px-6 py-4">
-                  <p className="text-sm text-gray-500">
-                    Page {data.page} of {data.totalPages} · {data.total} total
-                  </p>
-                  <div className="flex gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={page === 1}
-                      onClick={() => setPage((p) => p - 1)}
-                    >
-                      Previous
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={page === data.totalPages}
-                      onClick={() => setPage((p) => p + 1)}
-                    >
-                      Next
-                    </Button>
-                  </div>
+                      <td className="py-3.5 px-3 whitespace-nowrap">
+                        {emp.role === 'ADMIN' ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                            <ShieldCheck className="size-3" />
+                            Administrator
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold bg-sky-500/10 text-sky-400 border border-sky-500/20">
+                            <Users className="size-3" />
+                            Field Executive
+                          </span>
+                        )}
+                      </td>
+
+                      <td className="py-3.5 px-3 whitespace-nowrap">
+                        <div className="space-y-0.5">
+                          <div className="flex items-center gap-1.5 text-foreground font-mono text-[11px]">
+                            <Phone className="size-3 text-muted-foreground" />
+                            <span>{emp.phone || '—'}</span>
+                          </div>
+                        </div>
+                      </td>
+
+                      <td className="py-3.5 px-3 whitespace-nowrap">
+                        <StatusBadge status={emp.isActive ? 'ACTIVE' : 'INACTIVE'} />
+                      </td>
+
+                      <td className="py-3.5 px-3 whitespace-nowrap text-muted-foreground font-mono text-[11px]">
+                        {formatDate(emp.createdAt)}
+                      </td>
+
+                      <td
+                        className="py-3.5 px-4 text-right whitespace-nowrap"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <div className="flex items-center justify-end gap-1.5">
+                          <Button
+                            variant="ghost"
+                            size="icon-xs"
+                            onClick={() => openEdit(emp)}
+                            className="size-7 text-muted-foreground hover:text-foreground"
+                            title="Edit Employee"
+                          >
+                            <Edit2 className="size-3.5" />
+                          </Button>
+
+                          <Button
+                            variant="ghost"
+                            size="icon-xs"
+                            onClick={() => openConfirm(emp)}
+                            className={
+                              emp.isActive
+                                ? 'size-7 text-rose-400 hover:text-rose-300 hover:bg-rose-500/10'
+                                : 'size-7 text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10'
+                            }
+                            title={emp.isActive ? 'Deactivate Employee' : 'Activate Employee'}
+                          >
+                            {emp.isActive ? (
+                              <UserX className="size-3.5" />
+                            ) : (
+                              <UserCheck className="size-3.5" />
+                            )}
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Pagination footer */}
+            {data.totalPages > 1 && (
+              <div className="flex items-center justify-between border-t border-border px-4 py-3 bg-muted/20">
+                <p className="text-xs text-muted-foreground">
+                  Showing page <span className="font-semibold text-foreground">{data.page}</span> of{' '}
+                  <span className="font-semibold text-foreground">{data.totalPages}</span> ({data.total} total staff)
+                </p>
+                <div className="flex items-center gap-1.5">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={page === 1 || isFetching}
+                    onClick={() => setPage((p) => Math.max(p - 1, 1))}
+                    className="h-8 gap-1 text-xs text-foreground"
+                  >
+                    <ChevronLeft className="size-3.5" />
+                    Previous
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={page === data.totalPages || isFetching}
+                    onClick={() => setPage((p) => p + 1)}
+                    className="h-8 gap-1 text-xs text-foreground"
+                  >
+                    Next
+                    <ChevronRight className="size-3.5" />
+                  </Button>
                 </div>
-              )}
-            </CardContent>
-          </Card>
+              </div>
+            )}
+          </div>
         )}
-      </div>
+      </Card>
 
+      {/* Create Employee Dialog */}
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent>
+        <DialogContent className="max-w-md bg-card border-border">
           <DialogHeader>
-            <DialogTitle>Add New Employee</DialogTitle>
-            <DialogDescription>Create a new employee account</DialogDescription>
+            <DialogTitle className="text-foreground font-heading">Add New Employee</DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground">
+              Create an account for a new sales executive or field representative.
+            </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4">
+          <div className="space-y-3.5 py-2 text-xs">
             <div>
-              <Label htmlFor="create-name">Name</Label>
+              <Label htmlFor="create-name" className="text-xs text-foreground">
+                Full Name <span className="text-rose-400">*</span>
+              </Label>
               <Input
                 id="create-name"
+                placeholder="e.g. Rajesh Kumar"
                 value={createForm.name}
                 onChange={(e) => setCreateForm({ ...createForm, name: e.target.value })}
+                className="mt-1 h-9 text-xs bg-background border-border"
               />
               {createErrors.name && (
-                <p className="mt-1 text-sm text-red-600">{createErrors.name}</p>
+                <p className="mt-1 text-[11px] text-rose-400">{createErrors.name}</p>
               )}
             </div>
+
             <div>
-              <Label htmlFor="create-email">Email</Label>
+              <Label htmlFor="create-email" className="text-xs text-foreground">
+                Work Email <span className="text-rose-400">*</span>
+              </Label>
               <Input
                 id="create-email"
                 type="email"
+                placeholder="rajesh@lathikka.com"
                 value={createForm.email}
                 onChange={(e) => setCreateForm({ ...createForm, email: e.target.value })}
+                className="mt-1 h-9 text-xs bg-background border-border font-mono"
               />
               {createErrors.email && (
-                <p className="mt-1 text-sm text-red-600">{createErrors.email}</p>
+                <p className="mt-1 text-[11px] text-rose-400">{createErrors.email}</p>
               )}
             </div>
+
             <div>
-              <Label htmlFor="create-phone">Phone</Label>
+              <Label htmlFor="create-phone" className="text-xs text-foreground">
+                Direct Contact Phone <span className="text-rose-400">*</span>
+              </Label>
               <Input
                 id="create-phone"
+                placeholder="+91 98765 43210"
                 value={createForm.phone}
                 onChange={(e) => setCreateForm({ ...createForm, phone: e.target.value })}
+                className="mt-1 h-9 text-xs bg-background border-border font-mono"
               />
               {createErrors.phone && (
-                <p className="mt-1 text-sm text-red-600">{createErrors.phone}</p>
+                <p className="mt-1 text-[11px] text-rose-400">{createErrors.phone}</p>
               )}
             </div>
+
             <div>
-              <Label htmlFor="create-password">Password</Label>
+              <Label htmlFor="create-password" className="text-xs text-foreground">
+                Initial Password <span className="text-rose-400">*</span>
+              </Label>
               <Input
                 id="create-password"
                 type="password"
+                placeholder="Minimum 6 characters"
                 value={createForm.password}
                 onChange={(e) => setCreateForm({ ...createForm, password: e.target.value })}
+                className="mt-1 h-9 text-xs bg-background border-border"
               />
               {createErrors.password && (
-                <p className="mt-1 text-sm text-red-600">{createErrors.password}</p>
+                <p className="mt-1 text-[11px] text-rose-400">{createErrors.password}</p>
               )}
             </div>
+
             {createErrors.submit && (
-              <p className="text-sm text-red-600">{createErrors.submit}</p>
+              <p className="text-xs text-rose-400 p-2.5 bg-rose-500/10 border border-rose-500/20 rounded-lg">
+                {createErrors.submit}
+              </p>
             )}
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setCreateOpen(false)}>
+          <DialogFooter className="gap-2 sm:gap-0 pt-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setCreateOpen(false)}
+              className="text-xs text-foreground"
+            >
               Cancel
             </Button>
-            <Button onClick={handleCreate} disabled={createMutation.isPending}>
-              {createMutation.isPending ? 'Creating...' : 'Create'}
+            <Button
+              size="sm"
+              onClick={handleCreate}
+              disabled={createMutation.isPending}
+              className="text-xs bg-primary text-primary-foreground font-semibold hover:bg-primary/90"
+            >
+              {createMutation.isPending ? 'Creating Account...' : 'Create Employee'}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
+      {/* Edit Employee Dialog */}
       <Dialog open={editOpen} onOpenChange={setEditOpen}>
-        <DialogContent>
+        <DialogContent className="max-w-md bg-card border-border">
           <DialogHeader>
-            <DialogTitle>Edit Employee</DialogTitle>
-            <DialogDescription>Update employee details</DialogDescription>
+            <DialogTitle className="text-foreground font-heading">Edit Employee Profile</DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground">
+              Update credentials and contact details for {selectedEmployee?.name}.
+            </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4">
+          <div className="space-y-3.5 py-2 text-xs">
             <div>
-              <Label htmlFor="edit-name">Name</Label>
+              <Label htmlFor="edit-name" className="text-xs text-foreground">
+                Full Name
+              </Label>
               <Input
                 id="edit-name"
                 value={editForm.name || ''}
                 onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
+                className="mt-1 h-9 text-xs bg-background border-border"
               />
-              {editErrors.name && <p className="mt-1 text-sm text-red-600">{editErrors.name}</p>}
+              {editErrors.name && (
+                <p className="mt-1 text-[11px] text-rose-400">{editErrors.name}</p>
+              )}
             </div>
+
             <div>
-              <Label htmlFor="edit-email">Email</Label>
+              <Label htmlFor="edit-email" className="text-xs text-foreground">
+                Work Email
+              </Label>
               <Input
                 id="edit-email"
                 type="email"
                 value={editForm.email || ''}
                 onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
+                className="mt-1 h-9 text-xs bg-background border-border font-mono"
               />
-              {editErrors.email && <p className="mt-1 text-sm text-red-600">{editErrors.email}</p>}
+              {editErrors.email && (
+                <p className="mt-1 text-[11px] text-rose-400">{editErrors.email}</p>
+              )}
             </div>
+
             <div>
-              <Label htmlFor="edit-phone">Phone</Label>
+              <Label htmlFor="edit-phone" className="text-xs text-foreground">
+                Phone Number
+              </Label>
               <Input
                 id="edit-phone"
                 value={editForm.phone || ''}
                 onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })}
+                className="mt-1 h-9 text-xs bg-background border-border font-mono"
               />
-              {editErrors.phone && <p className="mt-1 text-sm text-red-600">{editErrors.phone}</p>}
+              {editErrors.phone && (
+                <p className="mt-1 text-[11px] text-rose-400">{editErrors.phone}</p>
+              )}
             </div>
-            {editErrors.submit && <p className="text-sm text-red-600">{editErrors.submit}</p>}
+
+            {editErrors.submit && (
+              <p className="text-xs text-rose-400 p-2.5 bg-rose-500/10 border border-rose-500/20 rounded-lg">
+                {editErrors.submit}
+              </p>
+            )}
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setEditOpen(false)}>
+          <DialogFooter className="gap-2 sm:gap-0 pt-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setEditOpen(false)}
+              className="text-xs text-foreground"
+            >
               Cancel
             </Button>
-            <Button onClick={handleEdit} disabled={updateMutation.isPending}>
-              {updateMutation.isPending ? 'Updating...' : 'Update'}
+            <Button
+              size="sm"
+              onClick={handleEdit}
+              disabled={updateMutation.isPending}
+              className="text-xs bg-primary text-primary-foreground font-semibold hover:bg-primary/90"
+            >
+              {updateMutation.isPending ? 'Saving...' : 'Save Changes'}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
+      {/* Deactivate/Activate Confirmation Alert */}
       <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-        <AlertDialogContent>
+        <AlertDialogContent className="bg-card border-border">
           <AlertDialogHeader>
-            <AlertDialogTitle>
+            <AlertDialogTitle className="text-foreground font-heading">
               {selectedEmployee?.isActive ? 'Deactivate' : 'Activate'} Employee?
             </AlertDialogTitle>
-            <AlertDialogDescription>
+            <AlertDialogDescription className="text-xs text-muted-foreground">
               Are you sure you want to {selectedEmployee?.isActive ? 'deactivate' : 'activate'}{' '}
-              {selectedEmployee?.name}?
+              <strong className="text-foreground">{selectedEmployee?.name}</strong>?{' '}
+              {selectedEmployee?.isActive
+                ? 'They will temporarily lose access to log field visits, record orders, and manage claims.'
+                : 'They will regain immediate access to on-field and order logging workflows.'}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleStatusToggle} disabled={statusMutation.isPending}>
-              {statusMutation.isPending ? 'Processing...' : 'Confirm'}
+            <AlertDialogCancel className="text-xs text-foreground">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleStatusToggle}
+              disabled={statusMutation.isPending}
+              className={
+                selectedEmployee?.isActive
+                  ? 'text-xs bg-rose-600 hover:bg-rose-700 text-white font-semibold'
+                  : 'text-xs bg-emerald-600 hover:bg-emerald-700 text-white font-semibold'
+              }
+            >
+              {statusMutation.isPending
+                ? 'Processing...'
+                : selectedEmployee?.isActive
+                ? 'Deactivate Staff'
+                : 'Activate Staff'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

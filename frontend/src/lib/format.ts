@@ -1,74 +1,56 @@
-// User instruction: "Phase 9: Dashboard - Create reusable Indian currency and date formatting utilities"
-// Importers/callers: frontend/src/app/dashboard/page.tsx, other frontend components
-// Affected API: None (UI formatting helpers)
-// Data schemas: None
-
 /**
- * Formats a number as Indian Currency (INR).
- * Example: 50000 -> ₹50,000
+ * Standard formatting utilities for Indian currency, numbers, and dates
  */
-export function formatCurrency(amount: number | undefined | null): string {
-  if (amount === undefined || amount === null || isNaN(Number(amount))) {
-    return '₹0';
-  }
 
-  const num = Number(amount);
+export function formatCurrency(amount: number | string | null | undefined): string {
+  if (amount === null || amount === undefined || amount === '') return '₹0';
+  const num = typeof amount === 'string' ? parseFloat(amount) : amount;
+  if (isNaN(num)) return '₹0';
+
   return new Intl.NumberFormat('en-IN', {
     style: 'currency',
     currency: 'INR',
     maximumFractionDigits: 2,
-    minimumFractionDigits: num % 1 === 0 ? 0 : 2,
+    minimumFractionDigits: 0,
   }).format(num);
 }
 
-/**
- * Formats a Date object or ISO string into a human-readable date.
- * Example: '2026-03-29T10:00:00Z' -> '29 Mar 2026'
- */
-export function formatDate(date: string | Date | undefined | null): string {
-  if (!date) return '-';
+export function formatNumber(value: number | string | null | undefined): string {
+  if (value === null || value === undefined || value === '') return '0';
+  const num = typeof value === 'string' ? parseFloat(value) : value;
+  if (isNaN(num)) return '0';
+
+  return new Intl.NumberFormat('en-IN').format(num);
+}
+
+export function formatDate(date: string | Date | null | undefined): string {
+  if (!date) return 'N/A';
   try {
     const d = new Date(date);
-    if (isNaN(d.getTime())) return '-';
+    if (isNaN(d.getTime())) return 'N/A';
     return d.toLocaleDateString('en-IN', {
       day: 'numeric',
       month: 'short',
       year: 'numeric',
     });
   } catch {
-    return '-';
+    return 'N/A';
   }
 }
 
-/**
- * Formats a Date object or ISO string into date and time.
- * Example: '2026-03-29T10:30:00Z' -> '29 Mar 2026, 10:30 AM'
- */
-export function formatDateTime(date: string | Date | undefined | null): string {
-  if (!date) return '-';
+export function formatDateTime(date: string | Date | null | undefined): string {
+  if (!date) return 'N/A';
   try {
     const d = new Date(date);
-    if (isNaN(d.getTime())) return '-';
+    if (isNaN(d.getTime())) return 'N/A';
     return d.toLocaleDateString('en-IN', {
       day: 'numeric',
       month: 'short',
       year: 'numeric',
-      hour: 'numeric',
-      minute: 'numeric',
-      hour12: true,
+      hour: '2-digit',
+      minute: '2-digit',
     });
   } catch {
-    return '-';
+    return 'N/A';
   }
-}
-
-/**
- * Formats a number with Indian thousand separators.
- * Example: 1000000 -> 10,00,000
- */
-export function formatNumber(value: number | undefined | null): string {
-  if (value === undefined || value === null || isNaN(Number(value))) {
-    return '0';
-  }
-  return new Intl.NumberFormat('en-IN').format(Number(value));
 }

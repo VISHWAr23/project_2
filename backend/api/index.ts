@@ -2,25 +2,33 @@ import dns from 'node:dns';
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { ExpressAdapter, NestExpressApplication } from '@nestjs/platform-express';
-import { AppModule } from './app.module.js';
-import { AllExceptionsFilter } from './common/filters/all-exceptions.filter.js';
-import { TransformInterceptor } from './common/interceptors/transform.interceptor.js';
+import express, { Request, Response } from 'express';
+import { AppModule } from '../src/app.module.js';
+import { AllExceptionsFilter } from '../src/common/filters/all-exceptions.filter.js';
+import { TransformInterceptor } from '../src/common/interceptors/transform.interceptor.js';
 
-// Ensure SRV records can be resolved properly in Node.js on Windows
+// Ensure SRV records can be resolved properly
 try {
   dns.setServers(['8.8.8.8', '1.1.1.1']);
 } catch {
   // Ignore if permissions or network disallow custom DNS
 }
 
-async function bootstrap() {
+const server = express();
+let cachedServer: express.Express | null = null;
+
+async function bootstrapServer(): Promise<express.Express> {
+  if (cachedServer) {
+    return cachedServer;
+  }
+
   const app = await NestFactory.create<NestExpressApplication>(
     AppModule,
-    new ExpressAdapter(),
+    new ExpressAdapter(server),
   );
 
-  // CORS configuration with validation
-  const corsOrigin = process.env.CORS_ORIGIN || 'http://localhost:3000';
+  // CORS configuration
+  const corsOrigin = process.env.CORS_ORIGIN || '*';
   const allowedOrigins = corsOrigin.split(',').map((o) => o.trim());
 
   app.enableCors({
@@ -28,10 +36,7 @@ async function bootstrap() {
       origin: string | undefined,
       callback: (err: Error | null, allow?: boolean) => void,
     ) => {
-      // Allow requests with no origin (mobile apps, Postman, etc.)
-      if (!origin) return callback(null, true);
-
-      if (allowedOrigins.includes(origin)) {
+      if (!origin || corsOrigin === '*' || allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
         console.warn(`[CORS] Blocked origin: ${origin}`);
@@ -47,25 +52,25 @@ async function bootstrap() {
   // Global validation pipe
   app.useGlobalPipes(
     new ValidationPipe({
-      whitelist: true, // Strip properties not in DTO
-      forbidNonWhitelisted: true, // Throw error for extra properties
-      transform: true, // Auto-transform payloads to DTO instances
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
       transformOptions: {
-        enableImplicitConversion: true, // Convert types automatically
+        enableImplicitConversion: true,
       },
     }),
   );
 
-  // Global exception filter
+  // Global filters and interceptors
   app.useGlobalFilters(new AllExceptionsFilter());
-
-  // Global response transformer
   app.useGlobalInterceptors(new TransformInterceptor());
 
-  const port = process.env.PORT || 5000;
-  await app.listen(port);
-
-  console.log(`🚀 Backend server running on http://localhost:${port}/api`);
+  await app.init();
+  cachedServer = server;
+  return cachedServer;
 }
 
-await bootstrap();
+export default async function handler(req: Request, res: Response) {
+  const appServer = await bootstrapServer();
+  return appServer(req, res);
+}

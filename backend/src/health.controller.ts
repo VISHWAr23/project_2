@@ -5,7 +5,7 @@
 
 import { Controller, Get, ServiceUnavailableException } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
-import { Connection } from 'mongoose';
+import type { Connection } from 'mongoose';
 import { Public } from './auth/decorators/public.decorator.js';
 
 @Controller('health')
@@ -34,4 +34,3 @@ export class HealthController {
     };
   }
 }
-

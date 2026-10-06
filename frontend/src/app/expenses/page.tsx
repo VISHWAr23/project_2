@@ -1,5 +1,5 @@
-// User instruction: "Phase 8: Expense Management - Create frontend expenses list, filter bar, metric cards, create modal with receipt upload, approve/reject workflow, and edit modal"
-// Importers/callers: Next.js App Router (/expenses), navigation from Dashboard (/dashboard)
+// User instruction: "14. Expenses (/expenses, /expenses/[id]): Expense submission (Category selection [Travel, Food, Stay, Fuel, Other], amount, description, receipt upload with image preview, date, client linkage), Expense list (Status filters [Pending, Approved, Rejected], date filter, employee filter for admin, summary cards [Total, Pending, Approved, Rejected]), Expense detail (Receipt viewer with zoom/rotate, approval workflow with rejection reason, payment status), Admin batch approval."
+// Importers/callers: Next.js App Router (/expenses), AppShell, Sidebar navigation
 // Affected API: /api/expenses (list, create, update, approve, reject, uploadReceipt), /api/employees (list)
 // Data schemas: Expense, ExpenseType, ExpenseStatus, ExpenseSummary, ExpenseListResponse, ExpenseQueryParams, CreateExpensePayload, UpdateExpensePayload, RejectExpensePayload
 
@@ -16,8 +16,13 @@ import { employeesApi } from '@/lib/api/employees';
 import { useAuth } from '@/providers/auth-provider';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
+import { PageHeader } from '@/components/ui/page-header';
+import { StatusBadge } from '@/components/ui/status-badge';
+import { StatCard } from '@/components/ui/stat-card';
+import { EmptyState } from '@/components/ui/empty-state';
+import { CurrencyDisplay } from '@/components/ui/currency-display';
 import {
   Dialog,
   DialogContent,
@@ -52,9 +57,15 @@ import {
   Utensils,
   Hotel,
   HelpCircle,
+  Filter,
+  RotateCcw,
   Loader2,
+  Calendar,
   ExternalLink,
+  ShieldCheck,
+  User as UserIcon,
 } from 'lucide-react';
+import { formatDate } from '@/lib/format';
 import type {
   Expense,
   ExpenseType,
@@ -63,16 +74,24 @@ import type {
   UpdateExpensePayload,
 } from '@/types/expense.types';
 
+// Zod validation schema for creating an expense claim
 const createExpenseSchema = z.object({
-  employee: z.string().optional(),
-  date: z.string().min(1, 'Date is required'),
-  type: z.enum(['FUEL', 'TRAVEL', 'FOOD', 'ACCOMMODATION', 'OTHER']),
-  amount: z.coerce.number().min(0.01, 'Amount must be at least 0.01'),
-  description: z.string().trim().min(1, 'Description is required'),
+  type: z.enum(['FUEL', 'TRAVEL', 'FOOD', 'ACCOMMODATION', 'OTHER'] as const, {
+    required_error: 'Please select an expense category',
+  }),
+  amount: z.coerce
+    .number({ invalid_type_error: 'Amount must be a numeric value' })
+    .positive('Amount must be greater than zero'),
+  description: z
+    .string()
+    .min(3, 'Description must be at least 3 characters')
+    .max(500, 'Description cannot exceed 500 characters'),
+  date: z.string().min(1, 'Please select an expense date'),
   receiptUrl: z.string().optional(),
+  employee: z.string().optional(),
 });
 
-type CreateExpenseFormValues = z.infer<typeof createExpenseSchema>;
+type CreateExpenseFormData = z.infer<typeof createExpenseSchema>;
 
 export default function ExpensesPage() {
   const router = useRouter();
@@ -80,155 +99,149 @@ export default function ExpensesPage() {
   const { user } = useAuth();
   const isAdmin = user?.role === 'ADMIN';
 
-  // Filters & Pagination State
+  // State Filters
   const [page, setPage] = useState(1);
-  const [employeeFilter, setEmployeeFilter] = useState<string>('all');
-  const [typeFilter, setTypeFilter] = useState<string>('all');
-  const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [statusFilter, setStatusFilter] = useState<string>('ALL');
+  const [typeFilter, setTypeFilter] = useState<string>('ALL');
+  const [employeeFilter, setEmployeeFilter] = useState<string>('ALL');
   const [startDate, setStartDate] = useState<string>('');
   const [endDate, setEndDate] = useState<string>('');
 
-  // Modals & Action State
+  // Modals State
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
-  const [selectedExpenseForEdit, setSelectedExpenseForEdit] =
-    useState<Expense | null>(null);
+  const [selectedExpense, setSelectedExpense] = useState<Expense | null>(null);
   const [rejectDialogOpen, setRejectDialogOpen] = useState(false);
-  const [selectedExpenseForReject, setSelectedExpenseForReject] =
-    useState<Expense | null>(null);
   const [rejectReason, setRejectReason] = useState('');
   const [rejectError, setRejectError] = useState('');
 
-  // Receipt Upload State
+  // Upload State for Receipt
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [receiptUrl, setReceiptUrl] = useState<string>('');
 
-  // Edit Form State
+  // Edit Form state
   const [editForm, setEditForm] = useState<UpdateExpensePayload>({});
   const [editErrors, setEditErrors] = useState<Record<string, string>>({});
 
-  const limit = 10;
+  // 1. Fetch Employees for Admin Filter & Form
+  const { data: employeesData } = useQuery({
+    queryKey: ['employees', { limit: 100 }],
+    queryFn: () => employeesApi.list({ limit: 100 }),
+    enabled: !!user && isAdmin,
+  });
 
-  // React Hook Form for Create Expense
+  // 2. Fetch Expenses Query
+  const queryParams = {
+    page,
+    limit: 10,
+    status: statusFilter !== 'ALL' ? (statusFilter as ExpenseStatus) : undefined,
+    type: typeFilter !== 'ALL' ? (typeFilter as ExpenseType) : undefined,
+    employee: employeeFilter !== 'ALL' ? employeeFilter : undefined,
+    startDate: startDate || undefined,
+    endDate: endDate || undefined,
+  };
+
+  const {
+    data: expensesData,
+    isLoading,
+    isError,
+  } = useQuery({
+    queryKey: ['expenses', queryParams],
+    queryFn: () => expensesApi.list(queryParams),
+    enabled: !!user,
+  });
+
+  // React Hook Form for Create
   const {
     register,
     handleSubmit,
+    reset: resetCreateForm,
     setValue,
     watch,
-    reset,
     formState: { errors },
-  } = useForm<CreateExpenseFormValues>({
+  } = useForm<CreateExpenseFormData>({
     resolver: zodResolver(createExpenseSchema),
     defaultValues: {
-      date: new Date().toISOString().split('T')[0],
       type: 'FUEL',
-      amount: undefined,
-      description: '',
+      date: new Date().toISOString().split('T')[0],
       receiptUrl: '',
+      employee: 'self',
     },
   });
 
   const selectedType = watch('type');
 
-  // 1. Fetch Expenses list
-  const { data: expensesData, isLoading: expensesLoading } = useQuery({
-    queryKey: [
-      'expenses',
-      page,
-      employeeFilter,
-      typeFilter,
-      statusFilter,
-      startDate,
-      endDate,
-    ],
-    queryFn: () =>
-      expensesApi.list({
-        page,
-        limit,
-        employeeId: employeeFilter !== 'all' ? employeeFilter : undefined,
-        type: typeFilter !== 'all' ? (typeFilter as ExpenseType) : undefined,
-        status: statusFilter !== 'all' ? (statusFilter as ExpenseStatus) : undefined,
-        startDate: startDate ? new Date(startDate).toISOString() : undefined,
-        endDate: endDate
-          ? new Date(endDate + 'T23:59:59.999Z').toISOString()
-          : undefined,
-      }),
-  });
-
-  // 2. Fetch Employees list for filter & admin assignment (Admin only)
-  const { data: employeesData } = useQuery({
-    queryKey: ['employees', 'active-list'],
-    queryFn: () => employeesApi.list({ limit: 100 }),
-    enabled: !!isAdmin,
-  });
-
-  // 3. Create Expense Mutation
+  // Mutations
   const createMutation = useMutation({
     mutationFn: (data: CreateExpensePayload) => expensesApi.create(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['expenses'] });
       setCreateOpen(false);
-      reset();
+      resetCreateForm();
       setReceiptUrl('');
       setUploadError(null);
     },
+    onError: (err: any) => {
+      setUploadError(err.response?.data?.message || 'Failed to submit expense claim');
+    },
   });
 
-  // 4. Update Expense Mutation
   const updateMutation = useMutation({
-    mutationFn: ({
-      id,
-      data,
-    }: {
-      id: string;
-      data: UpdateExpensePayload;
-    }) => expensesApi.update(id, data),
+    mutationFn: (data: UpdateExpensePayload) => {
+      if (!selectedExpense) throw new Error('No expense selected');
+      return expensesApi.update(selectedExpense._id, data);
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['expenses'] });
       setEditOpen(false);
-      setSelectedExpenseForEdit(null);
+      setSelectedExpense(null);
       setReceiptUrl('');
       setUploadError(null);
     },
+    onError: (err: any) => {
+      setUploadError(err.response?.data?.message || 'Failed to update expense');
+    },
   });
 
-  // 5. Approve Expense Mutation
   const approveMutation = useMutation({
     mutationFn: (id: string) => expensesApi.approve(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['expenses'] });
     },
+    onError: (err: any) => {
+      alert(err.response?.data?.message || 'Failed to approve expense');
+    },
   });
 
-  // 6. Reject Expense Mutation
   const rejectMutation = useMutation({
     mutationFn: ({ id, reason }: { id: string; reason: string }) =>
       expensesApi.reject(id, { reason }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['expenses'] });
       setRejectDialogOpen(false);
-      setSelectedExpenseForReject(null);
+      setSelectedExpense(null);
       setRejectReason('');
       setRejectError('');
+    },
+    onError: (err: any) => {
+      setRejectError(err.response?.data?.message || 'Failed to reject expense');
     },
   });
 
   // Handle Receipt Upload
   const handleFileUpload = async (
     e: React.ChangeEvent<HTMLInputElement>,
-    isEdit: boolean = false,
+    isEdit: boolean = false
   ) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // Validate size (5MB)
     if (file.size > 5 * 1024 * 1024) {
       setUploadError('File size exceeds maximum limit of 5MB');
       return;
     }
 
-    // Validate format
     const allowedTypes = [
       'image/jpeg',
       'image/png',
@@ -237,7 +250,7 @@ export default function ExpensesPage() {
       'application/pdf',
     ];
     if (!allowedTypes.includes(file.type)) {
-      setUploadError('Invalid format. Use JPEG, PNG, WebP, GIF, or PDF.');
+      setUploadError('Invalid file format. Allowed: JPEG, PNG, WebP, GIF, PDF');
       return;
     }
 
@@ -258,22 +271,20 @@ export default function ExpensesPage() {
     }
   };
 
-  const handleCreateSubmit = (data: CreateExpenseFormValues) => {
-    createMutation.mutate({
-      employee:
-        isAdmin && data.employee && data.employee !== 'self'
-          ? data.employee
-          : undefined,
+  const handleCreateSubmit = (data: CreateExpenseFormData) => {
+    const payload: CreateExpensePayload = {
       date: new Date(data.date).toISOString(),
       type: data.type,
       amount: Math.round(Number(data.amount) * 100) / 100,
       description: data.description.trim(),
-      receiptUrl: receiptUrl || undefined,
-    });
+      receiptUrl: data.receiptUrl || undefined,
+      employee: data.employee && data.employee !== 'self' ? data.employee : undefined,
+    };
+    createMutation.mutate(payload);
   };
 
   const handleEditOpen = (expense: Expense) => {
-    setSelectedExpenseForEdit(expense);
+    setSelectedExpense(expense);
     setEditForm({
       date: expense.date ? new Date(expense.date).toISOString().split('T')[0] : '',
       type: expense.type,
@@ -283,13 +294,12 @@ export default function ExpensesPage() {
     });
     setReceiptUrl(expense.receiptUrl || '');
     setEditErrors({});
+    setUploadError(null);
     setEditOpen(true);
   };
 
   const handleEditSubmit = () => {
-    if (!selectedExpenseForEdit) return;
     const errors: Record<string, string> = {};
-
     if (!editForm.date) errors.date = 'Date is required';
     if (!editForm.amount || Number(editForm.amount) < 0.01)
       errors.amount = 'Amount must be at least 0.01';
@@ -302,43 +312,36 @@ export default function ExpensesPage() {
     }
 
     updateMutation.mutate({
-      id: selectedExpenseForEdit._id,
-      data: {
-        date: editForm.date ? new Date(editForm.date).toISOString() : undefined,
-        type: editForm.type,
-        amount: editForm.amount
-          ? Math.round(Number(editForm.amount) * 100) / 100
-          : undefined,
-        description: editForm.description?.trim(),
-        receiptUrl: editForm.receiptUrl || undefined,
-      },
+      date: editForm.date ? new Date(editForm.date).toISOString() : undefined,
+      type: editForm.type,
+      amount: editForm.amount
+        ? Math.round(Number(editForm.amount) * 100) / 100
+        : undefined,
+      description: editForm.description?.trim(),
+      receiptUrl: editForm.receiptUrl || undefined,
     });
   };
 
-  const handleRejectClick = (expense: Expense) => {
-    setSelectedExpenseForReject(expense);
+  const handleRejectOpen = (expense: Expense) => {
+    setSelectedExpense(expense);
     setRejectReason('');
     setRejectError('');
     setRejectDialogOpen(true);
   };
 
   const handleRejectConfirm = () => {
-    if (!selectedExpenseForReject) return;
     if (!rejectReason.trim()) {
-      setRejectError('A rejection reason is required');
+      setRejectError('Please specify a rejection reason');
       return;
     }
-
-    rejectMutation.mutate({
-      id: selectedExpenseForReject._id,
-      reason: rejectReason.trim(),
-    });
+    if (!selectedExpense) return;
+    rejectMutation.mutate({ id: selectedExpense._id, reason: rejectReason.trim() });
   };
 
-  const clearFilters = () => {
-    setEmployeeFilter('all');
-    setTypeFilter('all');
-    setStatusFilter('all');
+  const resetFilters = () => {
+    setStatusFilter('ALL');
+    setTypeFilter('ALL');
+    setEmployeeFilter('ALL');
     setStartDate('');
     setEndDate('');
     setPage(1);
@@ -347,508 +350,451 @@ export default function ExpensesPage() {
   const getTypeIcon = (type: ExpenseType) => {
     switch (type) {
       case 'FUEL':
-        return <Car className="size-3.5 text-amber-600 dark:text-amber-400" />;
+        return <Car className="size-3.5 text-amber-400" />;
       case 'TRAVEL':
-        return <Plane className="size-3.5 text-blue-600 dark:text-blue-400" />;
+        return <Plane className="size-3.5 text-sky-400" />;
       case 'FOOD':
-        return <Utensils className="size-3.5 text-orange-600 dark:text-orange-400" />;
+        return <Utensils className="size-3.5 text-orange-400" />;
       case 'ACCOMMODATION':
-        return <Hotel className="size-3.5 text-purple-600 dark:text-purple-400" />;
+        return <Hotel className="size-3.5 text-purple-400" />;
       default:
-        return <HelpCircle className="size-3.5 text-zinc-600 dark:text-zinc-400" />;
+        return <HelpCircle className="size-3.5 text-zinc-400" />;
     }
   };
 
-  const getTypeBadgeClass = (type: ExpenseType) => {
-    switch (type) {
-      case 'FUEL':
-        return 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300 border-amber-200 dark:border-amber-800';
-      case 'TRAVEL':
-        return 'bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300 border-blue-200 dark:border-blue-800';
-      case 'FOOD':
-        return 'bg-orange-100 text-orange-800 dark:bg-orange-950 dark:text-orange-300 border-orange-200 dark:border-orange-800';
-      case 'ACCOMMODATION':
-        return 'bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300 border-purple-200 dark:border-purple-800';
-      default:
-        return 'bg-zinc-100 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-300 border-zinc-200 dark:border-zinc-700';
-    }
-  };
-
-  const getStatusBadge = (status: ExpenseStatus) => {
-    switch (status) {
-      case 'APPROVED':
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
-            <CheckCircle2 className="size-3" /> Approved
-          </span>
-        );
-      case 'REJECTED':
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300 border border-rose-200 dark:border-rose-800">
-            <XCircle className="size-3" /> Rejected
-          </span>
-        );
-      default:
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300 border border-amber-200 dark:border-amber-800">
-            <Clock className="size-3" /> Pending
-          </span>
-        );
-    }
-  };
-
-  const summary = expensesData?.summary || {
-    totalAmount: 0,
-    totalCount: 0,
-    pendingAmount: 0,
-    pendingCount: 0,
-    approvedAmount: 0,
-    approvedCount: 0,
-    rejectedAmount: 0,
-    rejectedCount: 0,
-  };
+  const summary = expensesData?.summary;
 
   return (
-    <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950 p-6 space-y-6">
-      {/* Top Header */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 max-w-7xl mx-auto">
-        <div className="flex items-center gap-3">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => router.push('/dashboard')}
-            className="gap-1.5"
-          >
-            <ArrowLeft className="size-4" /> Dashboard
-          </Button>
-          <div>
-            <h1 className="text-2xl font-bold text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
-              <Receipt className="size-6 text-emerald-600 dark:text-emerald-400" />
-              Expense Management
-            </h1>
-            <p className="text-xs text-zinc-500 mt-0.5">
-              {isAdmin
-                ? 'Review, approve, and track employee business expenses'
-                : 'Log and track your field and marketing reimbursement requests'}
-            </p>
-          </div>
-        </div>
-
+    <div className="space-y-6">
+      {/* Page Header */}
+      <PageHeader
+        title="Expense Claims"
+        subtitle="Manage business travel reimbursements, receipt attachments, and disbursement approvals."
+      >
         <Button
           onClick={() => {
-            reset();
+            resetCreateForm();
             setReceiptUrl('');
             setUploadError(null);
             setCreateOpen(true);
           }}
-          className="gap-2 bg-emerald-600 hover:bg-emerald-700 text-white"
+          className="h-9 px-4 text-xs bg-primary text-primary-foreground hover:bg-primary/90 font-semibold gap-1.5 shadow-sm"
         >
-          <Plus className="size-4" /> Log Expense
+          <Plus className="size-3.5" />
+          <span>Claim Expense</span>
         </Button>
+      </PageHeader>
+
+      {/* Summary Stat Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard
+          title="Total Claims"
+          value={<CurrencyDisplay amount={summary?.totalAmount || 0} />}
+          description={`${summary?.totalCount || 0} claims recorded`}
+          icon={Receipt}
+          variant="default"
+        />
+
+        <StatCard
+          title="Pending Review"
+          value={<CurrencyDisplay amount={summary?.pendingAmount || 0} />}
+          description={`${summary?.pendingCount || 0} claims awaiting audit`}
+          icon={Clock}
+          variant="warning"
+        />
+
+        <StatCard
+          title="Approved Claims"
+          value={<CurrencyDisplay amount={summary?.approvedAmount || 0} />}
+          description={`${summary?.approvedCount || 0} claims approved`}
+          icon={CheckCircle2}
+          variant="success"
+        />
+
+        <StatCard
+          title="Rejected Claims"
+          value={<CurrencyDisplay amount={summary?.rejectedAmount || 0} />}
+          description={`${summary?.rejectedCount || 0} claims declined`}
+          icon={XCircle}
+          variant="danger"
+        />
       </div>
 
-      <div className="max-w-7xl mx-auto space-y-6">
-        {/* Financial Metrics Summary Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          <Card className="border-l-4 border-l-blue-500">
-            <CardHeader className="pb-2 flex flex-row items-center justify-between">
-              <CardTitle className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">
-                Total Expenses
+      {/* Main Expenses Ledger Card */}
+      <Card className="bg-card border-border">
+        <CardHeader className="p-4 border-b border-border/80">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div>
+              <CardTitle className="text-sm font-semibold text-foreground flex items-center gap-2">
+                <Receipt className="size-4 text-primary" />
+                Reimbursement Ledger
               </CardTitle>
-              <DollarSign className="size-4 text-blue-500" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-zinc-900 dark:text-zinc-100">
-                ${summary.totalAmount.toFixed(2)}
-              </div>
-              <p className="text-xs text-zinc-500 mt-1">
-                {summary.totalCount} {summary.totalCount === 1 ? 'claim' : 'claims'} submitted
-              </p>
-            </CardContent>
-          </Card>
+              <CardDescription className="text-xs text-muted-foreground mt-0.5">
+                Audit trail of commercial receipts, fuel disbursements, and per-diem submissions
+              </CardDescription>
+            </div>
 
-          <Card className="border-l-4 border-l-amber-500">
-            <CardHeader className="pb-2 flex flex-row items-center justify-between">
-              <CardTitle className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">
-                Pending Approval
-              </CardTitle>
-              <Clock className="size-4 text-amber-500" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-amber-600 dark:text-amber-400">
-                ${summary.pendingAmount.toFixed(2)}
-              </div>
-              <p className="text-xs text-zinc-500 mt-1">
-                {summary.pendingCount} pending review
-              </p>
-            </CardContent>
-          </Card>
+            {/* Filter Bar */}
+            <div className="flex flex-wrap items-center gap-2">
+              {/* Status Filter */}
+              <Select
+                value={statusFilter}
+                onValueChange={(val: string) => {
+                  setStatusFilter(val);
+                  setPage(1);
+                }}
+              >
+                <SelectTrigger className="h-8 text-xs w-[130px] bg-background border-border">
+                  <SelectValue placeholder="Status" />
+                </SelectTrigger>
+                <SelectContent className="bg-card border-border">
+                  <SelectItem value="ALL">All Statuses</SelectItem>
+                  <SelectItem value="PENDING">Pending</SelectItem>
+                  <SelectItem value="APPROVED">Approved</SelectItem>
+                  <SelectItem value="REJECTED">Rejected</SelectItem>
+                </SelectContent>
+              </Select>
 
-          <Card className="border-l-4 border-l-emerald-500">
-            <CardHeader className="pb-2 flex flex-row items-center justify-between">
-              <CardTitle className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">
-                Approved
-              </CardTitle>
-              <CheckCircle2 className="size-4 text-emerald-500" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">
-                ${summary.approvedAmount.toFixed(2)}
-              </div>
-              <p className="text-xs text-zinc-500 mt-1">
-                {summary.approvedCount} approved claims
-              </p>
-            </CardContent>
-          </Card>
+              {/* Type Filter */}
+              <Select
+                value={typeFilter}
+                onValueChange={(val: string) => {
+                  setTypeFilter(val);
+                  setPage(1);
+                }}
+              >
+                <SelectTrigger className="h-8 text-xs w-[130px] bg-background border-border">
+                  <SelectValue placeholder="Category" />
+                </SelectTrigger>
+                <SelectContent className="bg-card border-border">
+                  <SelectItem value="ALL">All Categories</SelectItem>
+                  <SelectItem value="FUEL">Fuel</SelectItem>
+                  <SelectItem value="TRAVEL">Travel</SelectItem>
+                  <SelectItem value="FOOD">Food</SelectItem>
+                  <SelectItem value="ACCOMMODATION">Stay</SelectItem>
+                  <SelectItem value="OTHER">Other</SelectItem>
+                </SelectContent>
+              </Select>
 
-          <Card className="border-l-4 border-l-rose-500">
-            <CardHeader className="pb-2 flex flex-row items-center justify-between">
-              <CardTitle className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">
-                Rejected
-              </CardTitle>
-              <XCircle className="size-4 text-rose-500" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-rose-600 dark:text-rose-400">
-                ${summary.rejectedAmount.toFixed(2)}
-              </div>
-              <p className="text-xs text-zinc-500 mt-1">
-                {summary.rejectedCount} rejected claims
-              </p>
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* Filters Card */}
-        <Card>
-          <CardContent className="pt-6 space-y-4">
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3">
+              {/* Employee Filter (Admin Only) */}
               {isAdmin && (
-                <div>
-                  <Label className="text-xs mb-1.5 block">Employee</Label>
-                  <Select
-                    value={employeeFilter}
-                    onValueChange={(val: string) => {
-                      setEmployeeFilter(val);
-                      setPage(1);
-                    }}
-                  >
-                    <SelectTrigger className="w-full text-xs">
-                      <SelectValue placeholder="All Employees" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">All Employees</SelectItem>
-                      {employeesData?.items?.map((emp) => (
-                        <SelectItem key={emp._id} value={emp._id}>
-                          {emp.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+                <Select
+                  value={employeeFilter}
+                  onValueChange={(val: string) => {
+                    setEmployeeFilter(val);
+                    setPage(1);
+                  }}
+                >
+                  <SelectTrigger className="h-8 text-xs w-[150px] bg-background border-border">
+                    <SelectValue placeholder="Representative" />
+                  </SelectTrigger>
+                  <SelectContent className="bg-card border-border">
+                    <SelectItem value="ALL">All Field Reps</SelectItem>
+                    {employeesData?.items?.map((emp) => (
+                      <SelectItem key={emp._id} value={emp._id}>
+                        {emp.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               )}
 
-              <div>
-                <Label className="text-xs mb-1.5 block">Expense Type</Label>
-                <Select
-                  value={typeFilter}
-                  onValueChange={(val: string) => {
-                    setTypeFilter(val);
-                    setPage(1);
-                  }}
+              {/* Date Filters */}
+              <Input
+                type="date"
+                value={startDate}
+                onChange={(e) => {
+                  setStartDate(e.target.value);
+                  setPage(1);
+                }}
+                className="h-8 text-xs w-[130px] bg-background border-border"
+                placeholder="From date"
+              />
+
+              <Input
+                type="date"
+                value={endDate}
+                onChange={(e) => {
+                  setEndDate(e.target.value);
+                  setPage(1);
+                }}
+                className="h-8 text-xs w-[130px] bg-background border-border"
+                placeholder="To date"
+              />
+
+              {(statusFilter !== 'ALL' ||
+                typeFilter !== 'ALL' ||
+                employeeFilter !== 'ALL' ||
+                startDate ||
+                endDate) && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={resetFilters}
+                  className="h-8 px-2 text-xs text-muted-foreground hover:text-foreground gap-1"
                 >
-                  <SelectTrigger className="w-full text-xs">
-                    <SelectValue placeholder="All Types" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Types</SelectItem>
-                    <SelectItem value="FUEL">Fuel</SelectItem>
-                    <SelectItem value="TRAVEL">Travel</SelectItem>
-                    <SelectItem value="FOOD">Food</SelectItem>
-                    <SelectItem value="ACCOMMODATION">Accommodation</SelectItem>
-                    <SelectItem value="OTHER">Other</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div>
-                <Label className="text-xs mb-1.5 block">Status</Label>
-                <Select
-                  value={statusFilter}
-                  onValueChange={(val: string) => {
-                    setStatusFilter(val);
-                    setPage(1);
-                  }}
-                >
-                  <SelectTrigger className="w-full text-xs">
-                    <SelectValue placeholder="All Statuses" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Statuses</SelectItem>
-                    <SelectItem value="PENDING">Pending</SelectItem>
-                    <SelectItem value="APPROVED">Approved</SelectItem>
-                    <SelectItem value="REJECTED">Rejected</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div>
-                <Label className="text-xs mb-1.5 block">Start Date</Label>
-                <Input
-                  type="date"
-                  className="text-xs"
-                  value={startDate}
-                  onChange={(e) => {
-                    setStartDate(e.target.value);
-                    setPage(1);
-                  }}
-                />
-              </div>
-
-              <div>
-                <Label className="text-xs mb-1.5 block">End Date</Label>
-                <Input
-                  type="date"
-                  className="text-xs"
-                  value={endDate}
-                  onChange={(e) => {
-                    setEndDate(e.target.value);
-                    setPage(1);
-                  }}
-                />
-              </div>
+                  <RotateCcw className="size-3" />
+                  <span>Reset</span>
+                </Button>
+              )}
             </div>
+          </div>
+        </CardHeader>
 
-            <div className="flex justify-end gap-2">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={clearFilters}
-                className="text-xs"
-              >
-                Reset Filters
-              </Button>
+        <CardContent className="p-0">
+          {isLoading ? (
+            <div className="flex flex-col items-center justify-center p-16 text-center space-y-2">
+              <Receipt className="size-8 animate-pulse text-primary" />
+              <p className="text-xs text-muted-foreground">Loading expense records...</p>
             </div>
-          </CardContent>
-        </Card>
+          ) : isError ? (
+            <div className="flex flex-col items-center justify-center p-16 text-center space-y-2">
+              <p className="text-sm font-semibold text-rose-400">Failed to load expense records</p>
+              <p className="text-xs text-muted-foreground">Check your network connection and retry.</p>
+            </div>
+          ) : !expensesData?.items || expensesData.items.length === 0 ? (
+            <div className="p-8">
+              <EmptyState
+                icon={Receipt}
+                title="No expense claims found"
+                description={
+                  statusFilter !== 'ALL' || typeFilter !== 'ALL' || startDate || endDate
+                    ? 'No claims match your active filter criteria. Clear filters to see all records.'
+                    : 'Submit your first travel or business reimbursement claim using the button above.'
+                }
+                action={
+                  <Button
+                    onClick={() => {
+                      resetCreateForm();
+                      setReceiptUrl('');
+                      setUploadError(null);
+                      setCreateOpen(true);
+                    }}
+                    size="sm"
+                    className="h-8 text-xs bg-primary text-primary-foreground hover:bg-primary/90 gap-1.5"
+                  >
+                    <Plus className="size-3.5" />
+                    <span>Submit Claim</span>
+                  </Button>
+                }
+              />
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs text-left">
+                <thead className="bg-muted/30 border-b border-border text-muted-foreground uppercase font-semibold">
+                  <tr>
+                    <th className="px-4 py-3">Claim Ref & Date</th>
+                    <th className="px-4 py-3">Representative</th>
+                    <th className="px-4 py-3">Category</th>
+                    <th className="px-4 py-3">Business Purpose</th>
+                    <th className="px-4 py-3 text-center">Receipt</th>
+                    <th className="px-4 py-3 text-right">Amount</th>
+                    <th className="px-4 py-3 text-center">Status</th>
+                    <th className="px-4 py-3 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border/60">
+                  {expensesData.items.map((expense) => {
+                    const isOwner =
+                      expense.employee?._id === user?._id ||
+                      (typeof expense.employee === 'string' && expense.employee === user?._id);
 
-        {/* Expenses List Table */}
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base font-bold flex items-center justify-between">
-              <span>Expenses Records</span>
-              <span className="text-xs font-normal text-zinc-500">
-                Showing {expensesData?.items?.length || 0} of {expensesData?.total || 0}
-              </span>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="p-0">
-            {expensesLoading ? (
-              <div className="flex items-center justify-center p-12 text-zinc-500">
-                <Loader2 className="size-6 animate-spin mr-2" />
-                <span>Loading expenses...</span>
-              </div>
-            ) : !expensesData?.items || expensesData.items.length === 0 ? (
-              <div className="text-center p-12 text-zinc-500">
-                <Receipt className="size-10 mx-auto text-zinc-400 mb-2 opacity-50" />
-                <p className="font-medium text-sm">No expenses found</p>
-                <p className="text-xs text-zinc-400 mt-1">
-                  Try adjusting your filter settings or submit a new expense claim.
-                </p>
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm">
-                  <thead className="bg-zinc-100 dark:bg-zinc-900 border-b border-zinc-200 dark:border-zinc-800 text-xs text-zinc-600 dark:text-zinc-400 font-semibold uppercase tracking-wider">
-                    <tr>
-                      <th className="px-4 py-3">Date</th>
-                      {isAdmin && <th className="px-4 py-3">Employee</th>}
-                      <th className="px-4 py-3">Type</th>
-                      <th className="px-4 py-3">Amount</th>
-                      <th className="px-4 py-3">Description</th>
-                      <th className="px-4 py-3">Receipt</th>
-                      <th className="px-4 py-3">Status</th>
-                      <th className="px-4 py-3 text-right">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
-                    {expensesData.items.map((expense) => {
-                      const isOwner =
-                        expense.employee?._id === user?._id ||
-                        (typeof expense.employee === 'string' &&
-                          expense.employee === user?._id);
+                    return (
+                      <tr
+                        key={expense._id}
+                        className="hover:bg-muted/20 transition-colors cursor-pointer"
+                        onClick={() => router.push(`/expenses/${expense._id}`)}
+                      >
+                        {/* Ref & Date */}
+                        <td className="px-4 py-3">
+                          <div className="font-mono font-bold text-foreground">
+                            #{expense._id.slice(-6).toUpperCase()}
+                          </div>
+                          <div className="text-[11px] text-muted-foreground flex items-center gap-1 mt-0.5">
+                            <Calendar className="size-3 text-muted-foreground" />
+                            <span>{formatDate(expense.date)}</span>
+                          </div>
+                        </td>
 
-                      return (
-                        <tr
-                          key={expense._id}
-                          className="hover:bg-zinc-50 dark:hover:bg-zinc-900/60 transition-colors"
-                        >
-                          <td className="px-4 py-3 font-medium whitespace-nowrap text-zinc-900 dark:text-zinc-100">
-                            {new Date(expense.date).toLocaleDateString()}
-                          </td>
+                        {/* Employee */}
+                        <td className="px-4 py-3">
+                          <div className="font-semibold text-foreground font-heading">
+                            {expense.employee?.name || 'Unassigned'}
+                          </div>
+                          <div className="text-[11px] text-muted-foreground font-mono truncate max-w-[150px]">
+                            {expense.employee?.email || ''}
+                          </div>
+                        </td>
 
-                          {isAdmin && (
-                            <td className="px-4 py-3 whitespace-nowrap">
-                              <div className="font-medium text-zinc-900 dark:text-zinc-100">
-                                {expense.employee?.name || 'Unknown'}
-                              </div>
-                              <div className="text-xs text-zinc-500">
-                                {expense.employee?.email || ''}
-                              </div>
-                            </td>
-                          )}
+                        {/* Category */}
+                        <td className="px-4 py-3">
+                          <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium bg-muted/60 text-foreground border border-border/60">
+                            {getTypeIcon(expense.type)}
+                            <span>{expense.type}</span>
+                          </div>
+                        </td>
 
-                          <td className="px-4 py-3 whitespace-nowrap">
-                            <span
-                              className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md text-xs font-medium border ${getTypeBadgeClass(
-                                expense.type,
-                              )}`}
-                            >
-                              {getTypeIcon(expense.type)}
-                              {expense.type}
-                            </span>
-                          </td>
-
-                          <td className="px-4 py-3 font-bold text-zinc-900 dark:text-zinc-100 whitespace-nowrap">
-                            ${expense.amount.toFixed(2)}
-                          </td>
-
-                          <td className="px-4 py-3 max-w-xs truncate text-zinc-600 dark:text-zinc-300">
+                        {/* Description */}
+                        <td className="px-4 py-3 max-w-xs">
+                          <p className="truncate text-foreground font-medium" title={expense.description}>
                             {expense.description}
-                          </td>
+                          </p>
+                          {expense.status === 'REJECTED' && expense.rejectionReason && (
+                            <p className="text-[10px] text-rose-400 truncate mt-0.5">
+                              Declined: {expense.rejectionReason}
+                            </p>
+                          )}
+                        </td>
 
-                          <td className="px-4 py-3 whitespace-nowrap">
-                            {expense.receiptUrl ? (
-                              <a
-                                href={expense.receiptUrl}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="inline-flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400 hover:underline font-medium"
-                              >
-                                <FileText className="size-3.5" /> View Receipt
-                                <ExternalLink className="size-3" />
-                              </a>
-                            ) : (
-                              <span className="text-xs text-zinc-400 italic">
-                                No receipt
-                              </span>
-                            )}
-                          </td>
+                        {/* Receipt Icon */}
+                        <td className="px-4 py-3 text-center" onClick={(e) => e.stopPropagation()}>
+                          {expense.receiptUrl ? (
+                            <a
+                              href={expense.receiptUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center justify-center size-7 rounded bg-primary/10 hover:bg-primary/20 text-primary transition-colors border border-primary/20"
+                              title="View Attached Receipt"
+                            >
+                              <FileText className="size-3.5" />
+                            </a>
+                          ) : (
+                            <span className="text-[10px] text-muted-foreground italic">None</span>
+                          )}
+                        </td>
 
-                          <td className="px-4 py-3 whitespace-nowrap">
-                            {getStatusBadge(expense.status)}
-                          </td>
+                        {/* Amount */}
+                        <td className="px-4 py-3 text-right">
+                          <span className="font-mono font-bold text-foreground text-sm">
+                            <CurrencyDisplay amount={expense.amount} />
+                          </span>
+                        </td>
 
-                          <td className="px-4 py-3 text-right whitespace-nowrap">
-                            <div className="flex items-center justify-end gap-1.5">
+                        {/* Status */}
+                        <td className="px-4 py-3 text-center">
+                          <StatusBadge status={expense.status} />
+                        </td>
+
+                        {/* Action Buttons */}
+                        <td
+                          className="px-4 py-3 text-right"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <div className="flex items-center justify-end gap-1.5">
+                            {/* View Detail Link */}
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => router.push(`/expenses/${expense._id}`)}
+                              className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground"
+                              title="View Details"
+                            >
+                              <Eye className="size-3.5" />
+                            </Button>
+
+                            {/* Edit Button for Pending Expense */}
+                            {expense.status === 'PENDING' && (isOwner || isAdmin) && (
                               <Button
-                                variant="outline"
+                                variant="ghost"
                                 size="sm"
-                                onClick={() => router.push(`/expenses/${expense._id}`)}
-                                className="h-8 text-xs gap-1"
+                                onClick={() => handleEditOpen(expense)}
+                                className="h-7 w-7 p-0 text-sky-400 hover:text-sky-300 hover:bg-sky-950/40"
+                                title="Edit Expense"
                               >
-                                <Eye className="size-3.5" /> View
+                                <Edit2 className="size-3.5" />
                               </Button>
+                            )}
 
-                              {/* Admin Approve/Reject Controls for PENDING */}
-                              {isAdmin && expense.status === 'PENDING' && (
-                                <>
-                                  <Button
-                                    size="sm"
-                                    onClick={() => approveMutation.mutate(expense._id)}
-                                    disabled={approveMutation.isPending}
-                                    className="h-8 text-xs bg-emerald-600 hover:bg-emerald-700 text-white gap-1"
-                                  >
-                                    <Check className="size-3.5" /> Approve
-                                  </Button>
-                                  <Button
-                                    size="sm"
-                                    variant="destructive"
-                                    onClick={() => handleRejectClick(expense)}
-                                    disabled={rejectMutation.isPending}
-                                    className="h-8 text-xs gap-1"
-                                  >
-                                    <X className="size-3.5" /> Reject
-                                  </Button>
-                                </>
-                              )}
-
-                              {/* Employee Edit Control for PENDING */}
-                              {expense.status === 'PENDING' && (isOwner || isAdmin) && (
+                            {/* Admin Approve & Reject Actions */}
+                            {isAdmin && expense.status === 'PENDING' && (
+                              <>
                                 <Button
                                   variant="ghost"
                                   size="sm"
-                                  onClick={() => handleEditOpen(expense)}
-                                  className="h-8 text-xs gap-1"
+                                  onClick={() => approveMutation.mutate(expense._id)}
+                                  disabled={approveMutation.isPending}
+                                  className="h-7 w-7 p-0 text-emerald-400 hover:text-emerald-300 hover:bg-emerald-950/40"
+                                  title="Approve Claim"
                                 >
-                                  <Edit2 className="size-3.5" /> Edit
+                                  <Check className="size-3.5" />
                                 </Button>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => handleRejectOpen(expense)}
+                                  disabled={rejectMutation.isPending}
+                                  className="h-7 w-7 p-0 text-rose-400 hover:text-rose-300 hover:bg-rose-950/40"
+                                  title="Reject Claim"
+                                >
+                                  <X className="size-3.5" />
+                                </Button>
+                              </>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
 
-            {/* Pagination Controls */}
-            {expensesData && expensesData.totalPages > 1 && (
-              <div className="flex items-center justify-between p-4 border-t border-zinc-200 dark:border-zinc-800">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={page <= 1}
-                  onClick={() => setPage((p) => Math.max(1, p - 1))}
-                  className="text-xs"
-                >
-                  Previous
-                </Button>
-                <span className="text-xs text-zinc-500 font-medium">
-                  Page {page} of {expensesData.totalPages}
-                </span>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={page >= expensesData.totalPages}
-                  onClick={() => setPage((p) => p + 1)}
-                  className="text-xs"
-                >
-                  Next
-                </Button>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      </div>
+          {/* Pagination Controls */}
+          {expensesData && expensesData.totalPages > 1 && (
+            <div className="p-4 border-t border-border flex items-center justify-between">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={page <= 1}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                className="h-8 text-xs text-foreground"
+              >
+                Previous
+              </Button>
+              <span className="text-xs text-muted-foreground font-medium">
+                Page {page} of {expensesData.totalPages}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={page >= expensesData.totalPages}
+                onClick={() => setPage((p) => p + 1)}
+                className="h-8 text-xs text-foreground"
+              >
+                Next
+              </Button>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* CREATE EXPENSE MODAL */}
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="sm:max-w-lg bg-card border-border">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Receipt className="size-5 text-emerald-600" />
+            <DialogTitle className="flex items-center gap-2 text-foreground font-heading">
+              <Receipt className="size-5 text-primary" />
               Log Business Expense
             </DialogTitle>
-            <DialogDescription>
-              Submit an expense reimbursement request. Status will default to Pending.
+            <DialogDescription className="text-xs text-muted-foreground">
+              Submit an expense reimbursement request. Status will default to Pending review.
             </DialogDescription>
           </DialogHeader>
 
           <form onSubmit={handleSubmit(handleCreateSubmit)} className="space-y-4 pt-2">
             {isAdmin && (
               <div>
-                <Label className="text-xs mb-1 block">Employee (Optional)</Label>
+                <Label className="text-xs mb-1 block text-muted-foreground">Beneficiary Employee (Optional)</Label>
                 <Select
                   defaultValue="self"
                   onValueChange={(val: string) => setValue('employee', val)}
                 >
-                  <SelectTrigger className="w-full text-xs">
-                    <SelectValue placeholder="Submit for self or select employee" />
+                  <SelectTrigger className="w-full text-xs bg-background border-border">
+                    <SelectValue placeholder="Submit for self or select representative" />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent className="bg-card border-border">
                     <SelectItem value="self">Log for myself</SelectItem>
                     {employeesData?.items?.map((emp) => (
                       <SelectItem key={emp._id} value={emp._id}>
@@ -862,15 +808,15 @@ export default function ExpensesPage() {
 
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <Label className="text-xs mb-1 block">Expense Type *</Label>
+                <Label className="text-xs mb-1 block text-muted-foreground">Expense Category *</Label>
                 <Select
                   value={selectedType}
                   onValueChange={(val: any) => setValue('type', val)}
                 >
-                  <SelectTrigger className="w-full text-xs">
+                  <SelectTrigger className="w-full text-xs bg-background border-border">
                     <SelectValue placeholder="Select type" />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent className="bg-card border-border">
                     <SelectItem value="FUEL">Fuel</SelectItem>
                     <SelectItem value="TRAVEL">Travel</SelectItem>
                     <SelectItem value="FOOD">Food</SelectItem>
@@ -879,21 +825,21 @@ export default function ExpensesPage() {
                   </SelectContent>
                 </Select>
                 {errors.type && (
-                  <p className="text-rose-500 text-xs mt-1">
+                  <p className="text-rose-400 text-xs mt-1">
                     {errors.type.message}
                   </p>
                 )}
               </div>
 
               <div>
-                <Label className="text-xs mb-1 block">Date *</Label>
+                <Label className="text-xs mb-1 block text-muted-foreground">Expense Date *</Label>
                 <Input
                   type="date"
-                  className="text-xs"
+                  className="text-xs bg-background border-border"
                   {...register('date')}
                 />
                 {errors.date && (
-                  <p className="text-rose-500 text-xs mt-1">
+                  <p className="text-rose-400 text-xs mt-1">
                     {errors.date.message}
                   </p>
                 )}
@@ -901,32 +847,32 @@ export default function ExpensesPage() {
             </div>
 
             <div>
-              <Label className="text-xs mb-1 block">Amount ($ / INR) *</Label>
+              <Label className="text-xs mb-1 block text-muted-foreground">Claim Amount (INR / ₹) *</Label>
               <Input
                 type="number"
                 step="0.01"
                 min="0.01"
                 placeholder="0.00"
-                className="text-xs font-medium"
+                className="text-xs font-mono font-bold bg-background border-border"
                 {...register('amount')}
               />
               {errors.amount && (
-                <p className="text-rose-500 text-xs mt-1">
+                <p className="text-rose-400 text-xs mt-1">
                   {errors.amount.message}
                 </p>
               )}
             </div>
 
             <div>
-              <Label className="text-xs mb-1 block">Description *</Label>
+              <Label className="text-xs mb-1 block text-muted-foreground">Business Purpose / Description *</Label>
               <textarea
-                className="w-full rounded-md border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                className="w-full rounded-md border border-border bg-background px-3 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-primary text-foreground"
                 rows={3}
-                placeholder="Explain the business purpose of this expense..."
+                placeholder="Explain the commercial purpose, customer visited, or travel itinerary..."
                 {...register('description')}
               />
               {errors.description && (
-                <p className="text-rose-500 text-xs mt-1">
+                <p className="text-rose-400 text-xs mt-1">
                   {errors.description.message}
                 </p>
               )}
@@ -934,12 +880,12 @@ export default function ExpensesPage() {
 
             {/* Receipt Upload Section */}
             <div>
-              <Label className="text-xs mb-1 block">Receipt Attachment (Optional)</Label>
-              <div className="border-2 border-dashed border-zinc-200 dark:border-zinc-800 rounded-lg p-3 text-center">
+              <Label className="text-xs mb-1 block text-muted-foreground">Receipt Proof (Optional)</Label>
+              <div className="border-2 border-dashed border-border rounded-lg p-3 text-center bg-muted/10">
                 {receiptUrl ? (
-                  <div className="flex items-center justify-between bg-zinc-100 dark:bg-zinc-800 p-2 rounded">
-                    <span className="text-xs text-zinc-700 dark:text-zinc-300 truncate max-w-xs flex items-center gap-1.5">
-                      <FileText className="size-4 text-emerald-500 shrink-0" />
+                  <div className="flex items-center justify-between bg-muted/40 p-2 rounded border border-border">
+                    <span className="text-xs text-foreground truncate max-w-xs flex items-center gap-1.5">
+                      <FileText className="size-4 text-emerald-400 shrink-0" />
                       Receipt uploaded successfully
                     </span>
                     <Button
@@ -950,7 +896,7 @@ export default function ExpensesPage() {
                         setReceiptUrl('');
                         setValue('receiptUrl', '');
                       }}
-                      className="h-6 text-rose-500 hover:text-rose-600 text-xs"
+                      className="h-6 text-rose-400 hover:text-rose-300 text-xs"
                     >
                       Remove
                     </Button>
@@ -967,20 +913,20 @@ export default function ExpensesPage() {
                     />
                     <label
                       htmlFor="receipt-file"
-                      className="cursor-pointer flex flex-col items-center justify-center gap-1 text-xs text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
+                      className="cursor-pointer flex flex-col items-center justify-center gap-1 text-xs text-muted-foreground hover:text-foreground"
                     >
                       {isUploading ? (
                         <>
-                          <Loader2 className="size-5 animate-spin text-emerald-600" />
+                          <Loader2 className="size-5 animate-spin text-primary" />
                           <span>Uploading receipt...</span>
                         </>
                       ) : (
                         <>
-                          <Upload className="size-5 text-zinc-400" />
-                          <span className="font-medium text-emerald-600 dark:text-emerald-400">
+                          <Upload className="size-5 text-muted-foreground" />
+                          <span className="font-medium text-primary">
                             Click to upload receipt
                           </span>
-                          <span className="text-[11px] text-zinc-400">
+                          <span className="text-[11px] text-muted-foreground">
                             JPEG, PNG, WebP, GIF, or PDF (max 5MB)
                           </span>
                         </>
@@ -990,7 +936,7 @@ export default function ExpensesPage() {
                 )}
               </div>
               {uploadError && (
-                <p className="text-rose-500 text-xs mt-1">{uploadError}</p>
+                <p className="text-rose-400 text-xs mt-1">{uploadError}</p>
               )}
             </div>
 
@@ -999,19 +945,19 @@ export default function ExpensesPage() {
                 type="button"
                 variant="outline"
                 onClick={() => setCreateOpen(false)}
-                className="text-xs"
+                className="text-xs text-foreground"
               >
                 Cancel
               </Button>
               <Button
                 type="submit"
                 disabled={createMutation.isPending || isUploading}
-                className="text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
+                className="text-xs bg-primary text-primary-foreground hover:bg-primary/90 font-semibold"
               >
                 {createMutation.isPending && (
                   <Loader2 className="size-3 animate-spin mr-1.5" />
                 )}
-                Submit Expense
+                Submit Claim
               </Button>
             </DialogFooter>
           </form>
@@ -1020,31 +966,31 @@ export default function ExpensesPage() {
 
       {/* EDIT EXPENSE MODAL */}
       <Dialog open={editOpen} onOpenChange={setEditOpen}>
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="sm:max-w-lg bg-card border-border">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Edit2 className="size-5 text-blue-600" />
+            <DialogTitle className="flex items-center gap-2 text-foreground font-heading">
+              <Edit2 className="size-5 text-sky-400" />
               Edit Pending Expense
             </DialogTitle>
-            <DialogDescription>
-              Only pending expenses can be modified.
+            <DialogDescription className="text-xs text-muted-foreground">
+              Only pending reimbursement claims can be modified.
             </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-4 pt-2">
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <Label className="text-xs mb-1 block">Expense Type *</Label>
+                <Label className="text-xs mb-1 block text-muted-foreground">Expense Category *</Label>
                 <Select
                   value={editForm.type || 'FUEL'}
                   onValueChange={(val: any) =>
                     setEditForm((prev) => ({ ...prev, type: val }))
                   }
                 >
-                  <SelectTrigger className="w-full text-xs">
+                  <SelectTrigger className="w-full text-xs bg-background border-border">
                     <SelectValue placeholder="Select type" />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent className="bg-card border-border">
                     <SelectItem value="FUEL">Fuel</SelectItem>
                     <SelectItem value="TRAVEL">Travel</SelectItem>
                     <SelectItem value="FOOD">Food</SelectItem>
@@ -1055,17 +1001,17 @@ export default function ExpensesPage() {
               </div>
 
               <div>
-                <Label className="text-xs mb-1 block">Date *</Label>
+                <Label className="text-xs mb-1 block text-muted-foreground">Date *</Label>
                 <Input
                   type="date"
-                  className="text-xs"
+                  className="text-xs bg-background border-border"
                   value={editForm.date || ''}
                   onChange={(e) =>
                     setEditForm((prev) => ({ ...prev, date: e.target.value }))
                   }
                 />
                 {editErrors.date && (
-                  <p className="text-rose-500 text-xs mt-1">
+                  <p className="text-rose-400 text-xs mt-1">
                     {editErrors.date}
                   </p>
                 )}
@@ -1073,12 +1019,12 @@ export default function ExpensesPage() {
             </div>
 
             <div>
-              <Label className="text-xs mb-1 block">Amount ($ / INR) *</Label>
+              <Label className="text-xs mb-1 block text-muted-foreground">Amount (INR / ₹) *</Label>
               <Input
                 type="number"
                 step="0.01"
                 min="0.01"
-                className="text-xs font-medium"
+                className="text-xs font-mono font-bold bg-background border-border"
                 value={editForm.amount || ''}
                 onChange={(e) =>
                   setEditForm((prev) => ({
@@ -1088,16 +1034,16 @@ export default function ExpensesPage() {
                 }
               />
               {editErrors.amount && (
-                <p className="text-rose-500 text-xs mt-1">
+                <p className="text-rose-400 text-xs mt-1">
                   {editErrors.amount}
                 </p>
               )}
             </div>
 
             <div>
-              <Label className="text-xs mb-1 block">Description *</Label>
+              <Label className="text-xs mb-1 block text-muted-foreground">Business Purpose *</Label>
               <textarea
-                className="w-full rounded-md border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full rounded-md border border-border bg-background px-3 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-primary text-foreground"
                 rows={3}
                 value={editForm.description || ''}
                 onChange={(e) =>
@@ -1108,7 +1054,7 @@ export default function ExpensesPage() {
                 }
               />
               {editErrors.description && (
-                <p className="text-rose-500 text-xs mt-1">
+                <p className="text-rose-400 text-xs mt-1">
                   {editErrors.description}
                 </p>
               )}
@@ -1116,12 +1062,12 @@ export default function ExpensesPage() {
 
             {/* Edit Receipt Upload */}
             <div>
-              <Label className="text-xs mb-1 block">Receipt Attachment</Label>
-              <div className="border-2 border-dashed border-zinc-200 dark:border-zinc-800 rounded-lg p-3 text-center">
+              <Label className="text-xs mb-1 block text-muted-foreground">Receipt Attachment</Label>
+              <div className="border-2 border-dashed border-border rounded-lg p-3 text-center bg-muted/10">
                 {receiptUrl ? (
-                  <div className="flex items-center justify-between bg-zinc-100 dark:bg-zinc-800 p-2 rounded">
-                    <span className="text-xs text-zinc-700 dark:text-zinc-300 truncate max-w-xs flex items-center gap-1.5">
-                      <FileText className="size-4 text-blue-500 shrink-0" />
+                  <div className="flex items-center justify-between bg-muted/40 p-2 rounded border border-border">
+                    <span className="text-xs text-foreground truncate max-w-xs flex items-center gap-1.5">
+                      <FileText className="size-4 text-sky-400 shrink-0" />
                       Receipt attached
                     </span>
                     <Button
@@ -1132,7 +1078,7 @@ export default function ExpensesPage() {
                         setReceiptUrl('');
                         setEditForm((prev) => ({ ...prev, receiptUrl: '' }));
                       }}
-                      className="h-6 text-rose-500 hover:text-rose-600 text-xs"
+                      className="h-6 text-rose-400 hover:text-rose-300 text-xs"
                     >
                       Remove
                     </Button>
@@ -1149,17 +1095,17 @@ export default function ExpensesPage() {
                     />
                     <label
                       htmlFor="edit-receipt-file"
-                      className="cursor-pointer flex flex-col items-center justify-center gap-1 text-xs text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
+                      className="cursor-pointer flex flex-col items-center justify-center gap-1 text-xs text-muted-foreground hover:text-foreground"
                     >
                       {isUploading ? (
                         <>
-                          <Loader2 className="size-5 animate-spin text-blue-600" />
+                          <Loader2 className="size-5 animate-spin text-primary" />
                           <span>Uploading receipt...</span>
                         </>
                       ) : (
                         <>
-                          <Upload className="size-5 text-zinc-400" />
-                          <span className="font-medium text-blue-600 dark:text-blue-400">
+                          <Upload className="size-5 text-muted-foreground" />
+                          <span className="font-medium text-primary">
                             Upload new receipt
                           </span>
                         </>
@@ -1175,7 +1121,7 @@ export default function ExpensesPage() {
                 type="button"
                 variant="outline"
                 onClick={() => setEditOpen(false)}
-                className="text-xs"
+                className="text-xs text-foreground"
               >
                 Cancel
               </Button>
@@ -1183,7 +1129,7 @@ export default function ExpensesPage() {
                 type="button"
                 onClick={handleEditSubmit}
                 disabled={updateMutation.isPending || isUploading}
-                className="text-xs bg-blue-600 hover:bg-blue-700 text-white"
+                className="text-xs bg-sky-600 hover:bg-sky-500 text-white font-semibold"
               >
                 {updateMutation.isPending && (
                   <Loader2 className="size-3 animate-spin mr-1.5" />
@@ -1197,23 +1143,23 @@ export default function ExpensesPage() {
 
       {/* REJECT EXPENSE CONFIRMATION MODAL */}
       <Dialog open={rejectDialogOpen} onOpenChange={setRejectDialogOpen}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-md bg-card border-border">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-rose-600">
+            <DialogTitle className="flex items-center gap-2 text-rose-400 font-heading">
               <XCircle className="size-5" /> Reject Expense Claim
             </DialogTitle>
-            <DialogDescription>
-              Please provide a clear reason for rejecting this claim. This reason will be recorded and visible to the employee.
+            <DialogDescription className="text-xs text-muted-foreground">
+              Please provide a clear reason for rejecting this claim. This reason will be recorded and visible to the field representative.
             </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-3 pt-2">
             <div>
-              <Label className="text-xs mb-1 block">Rejection Reason *</Label>
+              <Label className="text-xs mb-1 block text-muted-foreground">Rejection Reason *</Label>
               <textarea
-                className="w-full rounded-md border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-rose-500"
+                className="w-full rounded-md border border-border bg-background px-3 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-rose-500 text-foreground"
                 rows={3}
-                placeholder="e.g. Missing valid receipt, amount discrepancy, unapproved travel..."
+                placeholder="e.g. Missing valid tax invoice, amount exceeds per-diem policy, unapproved trip..."
                 value={rejectReason}
                 onChange={(e) => {
                   setRejectReason(e.target.value);
@@ -1221,7 +1167,7 @@ export default function ExpensesPage() {
                 }}
               />
               {rejectError && (
-                <p className="text-rose-500 text-xs mt-1">{rejectError}</p>
+                <p className="text-rose-400 text-xs mt-1">{rejectError}</p>
               )}
             </div>
 
@@ -1230,7 +1176,7 @@ export default function ExpensesPage() {
                 type="button"
                 variant="outline"
                 onClick={() => setRejectDialogOpen(false)}
-                className="text-xs"
+                className="text-xs text-foreground"
               >
                 Cancel
               </Button>
@@ -1239,7 +1185,7 @@ export default function ExpensesPage() {
                 variant="destructive"
                 onClick={handleRejectConfirm}
                 disabled={rejectMutation.isPending}
-                className="text-xs"
+                className="text-xs bg-rose-600 hover:bg-rose-500 text-white font-semibold"
               >
                 {rejectMutation.isPending && (
                   <Loader2 className="size-3 animate-spin mr-1.5" />

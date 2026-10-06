@@ -9,10 +9,13 @@ const apiClient = axios.create({
   withCredentials: true,
 });
 
-// Request interceptor: attach accessToken from cookies if available
+// Request interceptor: attach accessToken from cookies or localStorage if available
 apiClient.interceptors.request.use(
   (config) => {
-    const token = Cookies.get('auth_token');
+    let token = Cookies.get('auth_token');
+    if (!token && typeof window !== 'undefined') {
+      token = localStorage.getItem('auth_token') || undefined;
+    }
     if (token && config.headers) {
       config.headers.Authorization = `Bearer ${token}`;
     }
@@ -34,9 +37,15 @@ apiClient.interceptors.response.use(
   },
   (error) => {
     if (error.response?.status === 401 && typeof window !== 'undefined') {
-      // Clear auth cookies on 401
-      Cookies.remove('auth_token');
-      Cookies.remove('auth_user');
+      // Clear auth cookies with root path and clear localStorage
+      Cookies.remove('auth_token', { path: '/' });
+      Cookies.remove('auth_user', { path: '/' });
+      try {
+        localStorage.removeItem('auth_token');
+        localStorage.removeItem('auth_user');
+      } catch {
+        // Ignore localStorage errors
+      }
       if (window.location.pathname !== '/login') {
         window.location.replace('/login');
       }

@@ -1,4 +1,4 @@
-// User instruction: "Phase 8: Expense Management - Create frontend expense detail page with receipt preview, reviewer timeline, edit modal, and admin approval/rejection actions"
+// User instruction: "NOW I ONLY WANT TWO THINGS: 1. Make the ENTIRE APPLICATION fully responsive and mobile-friendly. 2. Add a proper Light Theme + Dark Theme with a theme switcher."
 // Importers/callers: Next.js App Router (/expenses/[id]), links from /expenses list
 // Affected API: /api/expenses (getById, update, approve, reject, uploadReceipt)
 // Data schemas: Expense, ExpenseType, ExpenseStatus, UpdateExpensePayload, RejectExpensePayload
@@ -12,8 +12,12 @@ import { expensesApi } from '@/lib/api/expenses';
 import { useAuth } from '@/providers/auth-provider';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
+import { PageHeader } from '@/components/ui/page-header';
+import { StatusBadge } from '@/components/ui/status-badge';
+import { StatCard } from '@/components/ui/stat-card';
+import { CurrencyDisplay } from '@/components/ui/currency-display';
 import {
   Dialog,
   DialogContent,
@@ -35,7 +39,7 @@ import {
   CheckCircle2,
   XCircle,
   Clock,
-  User,
+  User as UserIcon,
   FileText,
   DollarSign,
   AlertTriangle,
@@ -52,7 +56,16 @@ import {
   HelpCircle,
   ShieldCheck,
   Download,
+  Receipt,
+  Mail,
+  Phone,
+  ZoomIn,
+  ZoomOut,
+  RotateCw,
+  RefreshCw,
+  Building2,
 } from 'lucide-react';
+import { formatDate } from '@/lib/format';
 import type {
   Expense,
   ExpenseType,
@@ -72,6 +85,10 @@ export default function ExpenseDetailPage({
   const { user } = useAuth();
   const isAdmin = user?.role === 'ADMIN';
 
+  // Receipt Viewer Zoom & Rotate State
+  const [zoomLevel, setZoomLevel] = useState(1);
+  const [rotation, setRotation] = useState(0);
+
   // Edit Modal State
   const [editOpen, setEditOpen] = useState(false);
   const [editForm, setEditForm] = useState<UpdateExpensePayload>({});
@@ -88,7 +105,7 @@ export default function ExpenseDetailPage({
   const { data: expense, isLoading, isError } = useQuery({
     queryKey: ['expense', expenseId],
     queryFn: () => expensesApi.getById(expenseId),
-    enabled: !!expenseId,
+    enabled: !!user && !!expenseId,
   });
 
   // 2. Approve Mutation
@@ -175,7 +192,7 @@ export default function ExpenseDetailPage({
     const errors: Record<string, string> = {};
     if (!editForm.date) errors.date = 'Date is required';
     if (!editForm.amount || Number(editForm.amount) < 0.01)
-      errors.amount = 'Amount must be at least 0.01';
+      errors.amount = 'Amount must be at least ₹0.01';
     if (!editForm.description?.trim())
       errors.description = 'Description is required';
 
@@ -211,62 +228,33 @@ export default function ExpenseDetailPage({
   const getTypeIcon = (type: ExpenseType) => {
     switch (type) {
       case 'FUEL':
-        return <Car className="size-4 text-amber-600 dark:text-amber-400" />;
+        return <Car className="size-4 text-amber-400" />;
       case 'TRAVEL':
-        return <Plane className="size-4 text-blue-600 dark:text-blue-400" />;
+        return <Plane className="size-4 text-blue-400" />;
       case 'FOOD':
-        return <Utensils className="size-4 text-orange-600 dark:text-orange-400" />;
+        return <Utensils className="size-4 text-orange-400" />;
       case 'ACCOMMODATION':
-        return <Hotel className="size-4 text-purple-600 dark:text-purple-400" />;
+        return <Hotel className="size-4 text-purple-400" />;
       default:
-        return <HelpCircle className="size-4 text-zinc-600 dark:text-zinc-400" />;
-    }
-  };
-
-  const getStatusBadge = (status: ExpenseStatus) => {
-    switch (status) {
-      case 'APPROVED':
-        return (
-          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
-            <CheckCircle2 className="size-3.5" /> Approved
-          </span>
-        );
-      case 'REJECTED':
-        return (
-          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300 border border-rose-200 dark:border-rose-800">
-            <XCircle className="size-3.5" /> Rejected
-          </span>
-        );
-      default:
-        return (
-          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300 border border-amber-200 dark:border-amber-800">
-            <Clock className="size-3.5" /> Pending Review
-          </span>
-        );
+        return <HelpCircle className="size-4 text-muted-foreground" />;
     }
   };
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950 p-8 flex items-center justify-center">
-        <div className="flex items-center gap-2 text-zinc-500">
-          <Loader2 className="size-6 animate-spin text-emerald-600" />
-          <span>Loading expense details...</span>
-        </div>
+      <div className="flex flex-col items-center justify-center p-16 text-center space-y-2">
+        <Receipt className="size-8 animate-pulse text-primary" />
+        <p className="text-xs text-muted-foreground">Loading expense claim...</p>
       </div>
     );
   }
 
   if (isError || !expense) {
     return (
-      <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950 p-8 flex flex-col items-center justify-center gap-4">
-        <AlertTriangle className="size-12 text-rose-500" />
-        <h2 className="text-xl font-bold">Expense Record Not Found</h2>
-        <p className="text-sm text-zinc-500">
-          The requested expense claim could not be loaded or you do not have permission to view it.
-        </p>
-        <Button onClick={() => router.push('/expenses')} variant="outline">
-          <ArrowLeft className="size-4 mr-2" /> Back to Expenses
+      <div className="flex flex-col items-center justify-center p-16 text-center space-y-4">
+        <p className="text-sm font-semibold text-rose-400">Expense record not found or access denied</p>
+        <Button onClick={() => router.push('/expenses')} variant="outline" size="sm" className="text-foreground">
+          <ArrowLeft className="size-4 mr-2" /> Back to Expenses Ledger
         </Button>
       </div>
     );
@@ -275,41 +263,28 @@ export default function ExpenseDetailPage({
   const isPdfReceipt = expense.receiptUrl?.toLowerCase().endsWith('.pdf');
 
   return (
-    <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950 p-6 space-y-6">
-      {/* Top Header */}
-      <div className="max-w-5xl mx-auto flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => router.push('/expenses')}
-            className="gap-1.5"
-          >
-            <ArrowLeft className="size-4" /> Back to Expenses
-          </Button>
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-xl font-bold text-zinc-900 dark:text-zinc-100">
-                Expense #{expense._id.slice(-6).toUpperCase()}
-              </h1>
-              {getStatusBadge(expense.status)}
-            </div>
-            <p className="text-xs text-zinc-500 mt-0.5">
-              Logged on {new Date(expense.createdAt).toLocaleString()}
-            </p>
-          </div>
-        </div>
-
-        {/* Action Buttons */}
+    <div className="space-y-6 max-w-5xl mx-auto">
+      {/* Page Header */}
+      <PageHeader
+        title={`Expense #${expense._id.slice(-6).toUpperCase()}`}
+        subtitle={`Submitted on ${formatDate(expense.createdAt)} by ${expense.employee?.name || 'Field Representative'}`}
+        backButton={{
+          label: 'Expenses',
+          onClick: () => router.push('/expenses'),
+        }}
+      >
         <div className="flex items-center gap-2">
+          <StatusBadge status={expense.status} />
+
           {expense.status === 'PENDING' && (isOwner || isAdmin) && (
             <Button
               variant="outline"
               size="sm"
               onClick={handleEditOpen}
-              className="gap-1.5 text-xs"
+              className="h-8 text-xs gap-1.5 text-foreground"
             >
-              <Edit2 className="size-3.5" /> Edit Expense
+              <Edit2 className="size-3.5" />
+              <span>Edit</span>
             </Button>
           )}
 
@@ -319,14 +294,14 @@ export default function ExpenseDetailPage({
                 size="sm"
                 onClick={() => approveMutation.mutate()}
                 disabled={approveMutation.isPending}
-                className="gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
+                className="h-8 px-3 text-xs bg-emerald-600 hover:bg-emerald-500 text-white font-semibold gap-1.5 shadow-sm"
               >
                 {approveMutation.isPending ? (
                   <Loader2 className="size-3.5 animate-spin" />
                 ) : (
                   <Check className="size-3.5" />
                 )}
-                Approve
+                <span>Approve Claim</span>
               </Button>
               <Button
                 size="sm"
@@ -337,144 +312,226 @@ export default function ExpenseDetailPage({
                   setRejectOpen(true);
                 }}
                 disabled={rejectMutation.isPending}
-                className="gap-1.5 text-xs"
+                className="h-8 px-3 text-xs gap-1.5 shadow-sm"
               >
-                <X className="size-3.5" /> Reject
+                <X className="size-3.5" />
+                <span>Reject</span>
               </Button>
             </>
           )}
         </div>
+      </PageHeader>
+
+      {/* Financial Breakdown Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard
+          title="Claim Amount"
+          value={<CurrencyDisplay amount={expense.amount} />}
+          description="Total requested reimbursement"
+          icon={Receipt}
+          variant="primary"
+        />
+
+        <StatCard
+          title="Expense Category"
+          value={expense.type}
+          description="Operational classification"
+          icon={getTypeIcon(expense.type).type as any || Receipt}
+          variant="default"
+        />
+
+        <StatCard
+          title="Expense Date"
+          value={formatDate(expense.date)}
+          description="Incurred on field duty"
+          icon={Calendar}
+          variant="default"
+        />
+
+        <StatCard
+          title="Claim Status"
+          value={expense.status}
+          description={
+            expense.status === 'APPROVED'
+              ? 'Authorized for payout'
+              : expense.status === 'REJECTED'
+              ? 'Claim declined'
+              : 'Pending administrative audit'
+          }
+          icon={
+            expense.status === 'APPROVED'
+              ? CheckCircle2
+              : expense.status === 'REJECTED'
+              ? XCircle
+              : Clock
+          }
+          variant={
+            expense.status === 'APPROVED'
+              ? 'success'
+              : expense.status === 'REJECTED'
+              ? 'danger'
+              : 'warning'
+          }
+        />
       </div>
 
-      <div className="max-w-5xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-6">
-        {/* Left 2 Columns: Main Details */}
-        <div className="md:col-span-2 space-y-6">
+      {/* Two Column Layout: Main Breakdown & Metadata Sidebar */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Left 2 Columns: Main Details & Receipt Viewer */}
+        <div className="lg:col-span-2 space-y-6">
           {/* Rejection Alert Banner if Rejected */}
           {expense.status === 'REJECTED' && (
-            <div className="p-4 rounded-lg bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-rose-900 dark:text-rose-200 space-y-1">
-              <div className="flex items-center gap-2 font-bold text-sm">
-                <XCircle className="size-4 text-rose-600" />
+            <div className="p-4 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-300 space-y-1">
+              <div className="flex items-center gap-2 font-semibold text-xs text-rose-400">
+                <XCircle className="size-4 text-rose-400" />
                 Claim Rejected by Administrator
               </div>
-              <p className="text-xs text-rose-700 dark:text-rose-300">
-                <span className="font-semibold">Reason: </span>
-                {expense.rejectionReason || 'No specific reason provided'}
+              <p className="text-xs text-rose-200/90 leading-relaxed">
+                <span className="font-semibold text-rose-300">Reason: </span>
+                {expense.rejectionReason || 'No specific reason provided.'}
               </p>
             </div>
           )}
 
           {/* Approval Banner if Approved */}
           {expense.status === 'APPROVED' && (
-            <div className="p-4 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-900 dark:text-emerald-200 space-y-1">
-              <div className="flex items-center gap-2 font-bold text-sm">
-                <CheckCircle2 className="size-4 text-emerald-600" />
+            <div className="p-4 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 space-y-1">
+              <div className="flex items-center gap-2 font-semibold text-xs text-emerald-400">
+                <CheckCircle2 className="size-4 text-emerald-400" />
                 Expense Approved for Reimbursement
               </div>
-              <p className="text-xs text-emerald-700 dark:text-emerald-300">
+              <p className="text-xs text-emerald-200/90">
                 Approved by {expense.reviewedBy?.name || 'Administrator'} on{' '}
-                {expense.reviewedAt
-                  ? new Date(expense.reviewedAt).toLocaleString()
-                  : 'N/A'}
+                {expense.reviewedAt ? formatDate(expense.reviewedAt) : 'N/A'}
               </p>
             </div>
           )}
 
           {/* Primary Expense Info Card */}
-          <Card>
-            <CardHeader className="pb-3 border-b border-zinc-200 dark:border-zinc-800">
-              <CardTitle className="text-base font-semibold">
-                Expense Overview
+          <Card className="bg-card border-border">
+            <CardHeader className="p-4 pb-2 border-b border-border/60">
+              <CardTitle className="text-xs font-semibold text-foreground flex items-center gap-2">
+                <Receipt className="size-3.5 text-primary" />
+                Expense Description & Justification
               </CardTitle>
             </CardHeader>
-            <CardContent className="pt-4 space-y-6">
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-                <div>
-                  <span className="text-xs text-zinc-500 block">Amount Claimed</span>
-                  <span className="text-2xl font-bold text-zinc-900 dark:text-zinc-100 flex items-center">
-                    ${expense.amount.toFixed(2)}
-                  </span>
-                </div>
-
-                <div>
-                  <span className="text-xs text-zinc-500 block">Expense Category</span>
-                  <div className="mt-1 flex items-center gap-1.5 font-medium text-sm text-zinc-800 dark:text-zinc-200">
-                    {getTypeIcon(expense.type)}
-                    <span>{expense.type}</span>
-                  </div>
-                </div>
-
-                <div>
-                  <span className="text-xs text-zinc-500 block">Expense Date</span>
-                  <div className="mt-1 flex items-center gap-1 text-sm text-zinc-800 dark:text-zinc-200">
-                    <Calendar className="size-3.5 text-zinc-400" />
-                    <span>{new Date(expense.date).toLocaleDateString()}</span>
-                  </div>
-                </div>
-              </div>
-
-              <div>
-                <span className="text-xs text-zinc-500 block mb-1">
-                  Purpose / Description
-                </span>
-                <p className="text-sm text-zinc-800 dark:text-zinc-200 whitespace-pre-wrap bg-zinc-50 dark:bg-zinc-900 p-3 rounded-md border border-zinc-200 dark:border-zinc-800 leading-relaxed">
-                  {expense.description}
-                </p>
+            <CardContent className="p-4 space-y-4">
+              <div className="p-3 bg-muted/20 border border-border/60 rounded-md text-xs text-foreground/90 whitespace-pre-wrap leading-relaxed">
+                {expense.description}
               </div>
             </CardContent>
           </Card>
 
-          {/* Receipt Preview Card */}
-          <Card>
-            <CardHeader className="pb-3 border-b border-zinc-200 dark:border-zinc-800 flex flex-row items-center justify-between">
-              <CardTitle className="text-base font-semibold flex items-center gap-2">
-                <FileText className="size-4 text-emerald-600" />
-                Receipt Proof
-              </CardTitle>
+          {/* Receipt Proof Viewer Card */}
+          <Card className="bg-card border-border overflow-hidden">
+            <CardHeader className="p-4 border-b border-border/60 flex flex-row items-center justify-between">
+              <div>
+                <CardTitle className="text-xs font-semibold text-foreground flex items-center gap-2">
+                  <FileText className="size-3.5 text-primary" />
+                  Receipt Verification Proof
+                </CardTitle>
+                <CardDescription className="text-[11px] text-muted-foreground">
+                  Attached proof of payment or bill document
+                </CardDescription>
+              </div>
               {expense.receiptUrl && (
-                <a
-                  href={expense.receiptUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-xs text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1 font-medium"
-                >
-                  Open Original <ExternalLink className="size-3" />
-                </a>
+                <div className="flex items-center gap-2">
+                  {!isPdfReceipt && (
+                    <div className="flex items-center gap-1 bg-muted/30 border border-border/60 rounded-md p-0.5">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => setZoomLevel((z) => Math.max(0.5, z - 0.25))}
+                        className="size-6 text-muted-foreground hover:text-foreground"
+                        title="Zoom out"
+                      >
+                        <ZoomOut className="size-3" />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => {
+                          setZoomLevel(1);
+                          setRotation(0);
+                        }}
+                        className="size-6 text-muted-foreground hover:text-foreground"
+                        title="Reset"
+                      >
+                        <RefreshCw className="size-3" />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => setZoomLevel((z) => Math.min(3, z + 0.25))}
+                        className="size-6 text-muted-foreground hover:text-foreground"
+                        title="Zoom in"
+                      >
+                        <ZoomIn className="size-3" />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => setRotation((r) => (r + 90) % 360)}
+                        className="size-6 text-muted-foreground hover:text-foreground"
+                        title="Rotate 90°"
+                      >
+                        <RotateCw className="size-3" />
+                      </Button>
+                    </div>
+                  )}
+                  <a
+                    href={expense.receiptUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 text-xs text-primary hover:underline font-medium"
+                  >
+                    <span>Original</span>
+                    <ExternalLink className="size-3" />
+                  </a>
+                </div>
               )}
             </CardHeader>
-            <CardContent className="pt-4">
+            <CardContent className="p-4">
               {expense.receiptUrl ? (
                 isPdfReceipt ? (
-                  <div className="border border-zinc-200 dark:border-zinc-800 rounded-lg p-6 text-center space-y-3 bg-zinc-50 dark:bg-zinc-900">
-                    <FileText className="size-12 mx-auto text-rose-500" />
+                  <div className="border border-border/60 rounded-lg p-8 text-center space-y-3 bg-muted/10">
+                    <FileText className="size-12 mx-auto text-rose-400" />
                     <div>
-                      <p className="font-medium text-sm">PDF Document Attached</p>
-                      <p className="text-xs text-zinc-400">
-                        Click below to view or download the attached receipt document.
+                      <p className="font-semibold text-xs text-foreground">PDF Document Attached</p>
+                      <p className="text-[11px] text-muted-foreground">
+                        Document available for verified review and compliance auditing
                       </p>
                     </div>
                     <a
                       href={expense.receiptUrl}
                       target="_blank"
                       rel="noreferrer"
-                      className="inline-flex items-center gap-1.5 px-4 py-2 bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 rounded-md text-xs font-semibold hover:opacity-90 transition-opacity"
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-primary text-primary-foreground rounded-md text-xs font-semibold hover:bg-primary/90 transition-opacity"
                     >
-                      <Download className="size-3.5" /> Download / View PDF
+                      <Download className="size-3.5" />
+                      <span>Download / View PDF</span>
                     </a>
                   </div>
                 ) : (
-                  <div className="space-y-3">
-                    <div className="relative rounded-lg overflow-hidden border border-zinc-200 dark:border-zinc-800 bg-zinc-950 flex items-center justify-center max-h-[500px]">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={expense.receiptUrl}
-                        alt="Receipt proof"
-                        className="object-contain max-h-[500px] w-full"
-                      />
-                    </div>
+                  <div className="relative rounded-lg overflow-hidden border border-border/60 bg-black/40 flex items-center justify-center min-h-[360px] max-h-[540px] p-4">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={expense.receiptUrl}
+                      alt="Receipt proof"
+                      style={{
+                        transform: `scale(${zoomLevel}) rotate(${rotation}deg)`,
+                        transition: 'transform 0.2s ease-in-out',
+                      }}
+                      className="object-contain max-h-[480px] w-auto max-w-full rounded"
+                    />
                   </div>
                 )
               ) : (
-                <div className="text-center p-8 text-zinc-400 border border-dashed rounded-lg">
+                <div className="text-center p-8 text-muted-foreground border border-dashed border-border rounded-lg">
                   <FileText className="size-8 mx-auto mb-2 opacity-40" />
                   <p className="text-xs font-medium">No receipt attached to this claim</p>
                 </div>
@@ -483,75 +540,86 @@ export default function ExpenseDetailPage({
           </Card>
         </div>
 
-        {/* Right 1 Column: Employee & Metadata Sidebar */}
+        {/* Right 1 Column: Employee Info & Reviewer Audit Trail */}
         <div className="space-y-6">
-          {/* Employee Info Card */}
-          <Card>
-            <CardHeader className="pb-3 border-b border-zinc-200 dark:border-zinc-800">
-              <CardTitle className="text-sm font-semibold flex items-center gap-2">
-                <User className="size-4 text-zinc-500" />
-                Employee Information
+          {/* Employee Information Card */}
+          <Card className="bg-card border-border">
+            <CardHeader className="p-4 pb-2 border-b border-border/60">
+              <CardTitle className="text-xs font-semibold text-foreground flex items-center gap-2">
+                <UserIcon className="size-3.5 text-primary" />
+                Field Representative
               </CardTitle>
             </CardHeader>
-            <CardContent className="pt-4 space-y-3 text-xs">
-              <div>
-                <span className="text-zinc-400 block">Name</span>
-                <span className="font-semibold text-zinc-900 dark:text-zinc-100 text-sm">
+            <CardContent className="p-4 space-y-2.5 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">Name</span>
+                <span className="font-semibold text-foreground font-heading">
                   {expense.employee?.name || 'Unknown'}
                 </span>
               </div>
-
-              <div>
-                <span className="text-zinc-400 block">Email Address</span>
-                <span className="text-zinc-700 dark:text-zinc-300">
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">Email</span>
+                <span className="font-mono text-foreground flex items-center gap-1">
+                  <Mail className="size-3 text-muted-foreground" />
                   {expense.employee?.email || 'N/A'}
                 </span>
               </div>
-
               {expense.employee?.phone && (
-                <div>
-                  <span className="text-zinc-400 block">Phone Number</span>
-                  <span className="text-zinc-700 dark:text-zinc-300">
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">Phone</span>
+                  <span className="font-mono text-foreground flex items-center gap-1">
+                    <Phone className="size-3 text-muted-foreground" />
                     {expense.employee.phone}
+                  </span>
+                </div>
+              )}
+              {(expense.employee as { designation?: string })?.designation && (
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">Designation</span>
+                  <span className="text-foreground">
+                    {(expense.employee as { designation?: string }).designation}
                   </span>
                 </div>
               )}
             </CardContent>
           </Card>
 
-          {/* Audit & Review Card */}
-          <Card>
-            <CardHeader className="pb-3 border-b border-zinc-200 dark:border-zinc-800">
-              <CardTitle className="text-sm font-semibold flex items-center gap-2">
-                <ShieldCheck className="size-4 text-zinc-500" />
-                Audit Trail
+          {/* Audit Trail & Review Timeline */}
+          <Card className="bg-card border-border">
+            <CardHeader className="p-4 pb-2 border-b border-border/60">
+              <CardTitle className="text-xs font-semibold text-foreground flex items-center gap-2">
+                <ShieldCheck className="size-3.5 text-primary" />
+                Audit Trail & Reviewer
               </CardTitle>
             </CardHeader>
-            <CardContent className="pt-4 space-y-3 text-xs">
-              <div>
-                <span className="text-zinc-400 block">Submission Date</span>
-                <span className="text-zinc-700 dark:text-zinc-300">
-                  {new Date(expense.createdAt).toLocaleString()}
+            <CardContent className="p-4 space-y-3 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">Submission Date</span>
+                <span className="text-foreground">
+                  {formatDate(expense.createdAt)}
                 </span>
               </div>
 
-              <div>
-                <span className="text-zinc-400 block">Last Modification</span>
-                <span className="text-zinc-700 dark:text-zinc-300">
-                  {new Date(expense.updatedAt).toLocaleString()}
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">Last Modification</span>
+                <span className="text-foreground">
+                  {formatDate(expense.updatedAt)}
                 </span>
               </div>
 
               {expense.reviewedBy && (
-                <div className="pt-2 border-t border-zinc-200 dark:border-zinc-800">
-                  <span className="text-zinc-400 block">Reviewed By</span>
-                  <span className="font-medium text-zinc-800 dark:text-zinc-200">
-                    {expense.reviewedBy.name} ({expense.reviewedBy.email})
-                  </span>
+                <div className="pt-2 border-t border-border/60 space-y-1">
+                  <span className="text-muted-foreground block text-[11px] uppercase font-semibold">Reviewed By</span>
+                  <div className="font-medium text-foreground">
+                    {expense.reviewedBy.name}
+                  </div>
+                  <div className="text-[11px] font-mono text-muted-foreground">
+                    {expense.reviewedBy.email}
+                  </div>
                   {expense.reviewedAt && (
-                    <span className="text-zinc-400 block mt-0.5">
-                      on {new Date(expense.reviewedAt).toLocaleString()}
-                    </span>
+                    <div className="text-[11px] text-muted-foreground pt-0.5">
+                      on {formatDate(expense.reviewedAt)}
+                    </div>
                   )}
                 </div>
               )}
@@ -562,21 +630,21 @@ export default function ExpenseDetailPage({
 
       {/* EDIT MODAL */}
       <Dialog open={editOpen} onOpenChange={setEditOpen}>
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="sm:max-w-lg bg-card border-border">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Edit2 className="size-5 text-blue-600" />
+            <DialogTitle className="flex items-center gap-2 text-foreground font-heading">
+              <Edit2 className="size-4 text-primary" />
               Edit Pending Expense
             </DialogTitle>
-            <DialogDescription>
-              Update your expense information and receipt attachment.
+            <DialogDescription className="text-xs text-muted-foreground">
+              Update your expense information and receipt attachment before administrative review.
             </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-4 pt-2">
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <Label className="text-xs mb-1 block">Expense Type *</Label>
+                <Label className="text-xs mb-1 block text-muted-foreground">Expense Type *</Label>
                 <Select
                   value={editForm.type || 'FUEL'}
                   onValueChange={(val: any) =>
@@ -597,7 +665,7 @@ export default function ExpenseDetailPage({
               </div>
 
               <div>
-                <Label className="text-xs mb-1 block">Date *</Label>
+                <Label className="text-xs mb-1 block text-muted-foreground">Date *</Label>
                 <Input
                   type="date"
                   className="text-xs"
@@ -607,18 +675,18 @@ export default function ExpenseDetailPage({
                   }
                 />
                 {editErrors.date && (
-                  <p className="text-rose-500 text-xs mt-1">{editErrors.date}</p>
+                  <p className="text-rose-400 text-xs mt-1">{editErrors.date}</p>
                 )}
               </div>
             </div>
 
             <div>
-              <Label className="text-xs mb-1 block">Amount ($ / INR) *</Label>
+              <Label className="text-xs mb-1 block text-muted-foreground">Amount (₹) *</Label>
               <Input
                 type="number"
                 step="0.01"
                 min="0.01"
-                className="text-xs font-medium"
+                className="text-xs font-mono font-medium"
                 value={editForm.amount || ''}
                 onChange={(e) =>
                   setEditForm((prev) => ({
@@ -628,14 +696,14 @@ export default function ExpenseDetailPage({
                 }
               />
               {editErrors.amount && (
-                <p className="text-rose-500 text-xs mt-1">{editErrors.amount}</p>
+                <p className="text-rose-400 text-xs mt-1">{editErrors.amount}</p>
               )}
             </div>
 
             <div>
-              <Label className="text-xs mb-1 block">Description *</Label>
+              <Label className="text-xs mb-1 block text-muted-foreground">Description *</Label>
               <textarea
-                className="w-full rounded-md border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full rounded-md border border-border bg-muted/20 px-3 py-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
                 rows={3}
                 value={editForm.description || ''}
                 onChange={(e) =>
@@ -646,7 +714,7 @@ export default function ExpenseDetailPage({
                 }
               />
               {editErrors.description && (
-                <p className="text-rose-500 text-xs mt-1">
+                <p className="text-rose-400 text-xs mt-1">
                   {editErrors.description}
                 </p>
               )}
@@ -654,12 +722,12 @@ export default function ExpenseDetailPage({
 
             {/* Receipt Upload */}
             <div>
-              <Label className="text-xs mb-1 block">Receipt Attachment</Label>
-              <div className="border-2 border-dashed border-zinc-200 dark:border-zinc-800 rounded-lg p-3 text-center">
+              <Label className="text-xs mb-1 block text-muted-foreground">Receipt Attachment</Label>
+              <div className="border border-dashed border-border rounded-lg p-3 text-center bg-muted/10">
                 {editForm.receiptUrl ? (
-                  <div className="flex items-center justify-between bg-zinc-100 dark:bg-zinc-800 p-2 rounded">
-                    <span className="text-xs text-zinc-700 dark:text-zinc-300 truncate max-w-xs flex items-center gap-1.5">
-                      <FileText className="size-4 text-blue-500 shrink-0" />
+                  <div className="flex items-center justify-between bg-muted/40 p-2 rounded">
+                    <span className="text-xs text-foreground truncate max-w-xs flex items-center gap-1.5">
+                      <FileText className="size-4 text-primary shrink-0" />
                       Receipt attached
                     </span>
                     <Button
@@ -669,7 +737,7 @@ export default function ExpenseDetailPage({
                       onClick={() =>
                         setEditForm((prev) => ({ ...prev, receiptUrl: '' }))
                       }
-                      className="h-6 text-rose-500 hover:text-rose-600 text-xs"
+                      className="h-6 text-rose-400 hover:text-rose-300 text-xs"
                     >
                       Remove
                     </Button>
@@ -686,17 +754,17 @@ export default function ExpenseDetailPage({
                     />
                     <label
                       htmlFor="edit-detail-receipt-file"
-                      className="cursor-pointer flex flex-col items-center justify-center gap-1 text-xs text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
+                      className="cursor-pointer flex flex-col items-center justify-center gap-1 text-xs text-muted-foreground hover:text-foreground"
                     >
                       {isUploading ? (
                         <>
-                          <Loader2 className="size-5 animate-spin text-blue-600" />
+                          <Loader2 className="size-5 animate-spin text-primary" />
                           <span>Uploading receipt...</span>
                         </>
                       ) : (
                         <>
-                          <Upload className="size-5 text-zinc-400" />
-                          <span className="font-medium text-blue-600 dark:text-blue-400">
+                          <Upload className="size-5 text-muted-foreground" />
+                          <span className="font-medium text-primary">
                             Upload new receipt
                           </span>
                         </>
@@ -706,7 +774,7 @@ export default function ExpenseDetailPage({
                 )}
               </div>
               {uploadError && (
-                <p className="text-rose-500 text-xs mt-1">{uploadError}</p>
+                <p className="text-rose-400 text-xs mt-1">{uploadError}</p>
               )}
             </div>
 
@@ -715,7 +783,7 @@ export default function ExpenseDetailPage({
                 type="button"
                 variant="outline"
                 onClick={() => setEditOpen(false)}
-                className="text-xs"
+                className="text-xs text-foreground"
               >
                 Cancel
               </Button>
@@ -723,7 +791,7 @@ export default function ExpenseDetailPage({
                 type="button"
                 onClick={handleEditSubmit}
                 disabled={updateMutation.isPending || isUploading}
-                className="text-xs bg-blue-600 hover:bg-blue-700 text-white"
+                className="text-xs bg-primary hover:bg-primary/90 text-primary-foreground font-semibold"
               >
                 {updateMutation.isPending && (
                   <Loader2 className="size-3 animate-spin mr-1.5" />
@@ -737,23 +805,23 @@ export default function ExpenseDetailPage({
 
       {/* REJECT CONFIRMATION MODAL */}
       <Dialog open={rejectOpen} onOpenChange={setRejectOpen}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-md bg-card border-border">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-rose-600">
-              <XCircle className="size-5" /> Reject Expense Claim
+            <DialogTitle className="flex items-center gap-2 text-rose-400 font-heading">
+              <XCircle className="size-4" /> Reject Expense Claim
             </DialogTitle>
-            <DialogDescription>
-              Please enter a reason for rejecting this claim. This reason will be recorded and shown to the employee.
+            <DialogDescription className="text-xs text-muted-foreground">
+              Please enter a reason for rejecting this claim. This reason will be recorded and shown to the field employee.
             </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-3 pt-2">
             <div>
-              <Label className="text-xs mb-1 block">Rejection Reason *</Label>
+              <Label className="text-xs mb-1 block text-muted-foreground">Rejection Reason *</Label>
               <textarea
-                className="w-full rounded-md border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-rose-500"
+                className="w-full rounded-md border border-border bg-muted/20 px-3 py-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-rose-500"
                 rows={3}
-                placeholder="e.g. Ineligible category, missing proof, incorrect amount..."
+                placeholder="e.g. Ineligible category, missing valid invoice, incorrect amount..."
                 value={rejectReason}
                 onChange={(e) => {
                   setRejectReason(e.target.value);
@@ -761,7 +829,7 @@ export default function ExpenseDetailPage({
                 }}
               />
               {rejectError && (
-                <p className="text-rose-500 text-xs mt-1">{rejectError}</p>
+                <p className="text-rose-400 text-xs mt-1">{rejectError}</p>
               )}
             </div>
 
@@ -770,7 +838,7 @@ export default function ExpenseDetailPage({
                 type="button"
                 variant="outline"
                 onClick={() => setRejectOpen(false)}
-                className="text-xs"
+                className="text-xs text-foreground"
               >
                 Cancel
               </Button>
@@ -779,7 +847,7 @@ export default function ExpenseDetailPage({
                 variant="destructive"
                 onClick={handleRejectSubmit}
                 disabled={rejectMutation.isPending}
-                className="text-xs"
+                className="text-xs font-semibold"
               >
                 {rejectMutation.isPending && (
                   <Loader2 className="size-3 animate-spin mr-1.5" />

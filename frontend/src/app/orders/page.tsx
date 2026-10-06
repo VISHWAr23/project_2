@@ -1,6 +1,6 @@
-// User instruction: "Phase 6: Order Management - Create frontend Orders list and creation UI"
-// Importers/callers: Next.js App Router (/orders)
-// Affected API: /api/orders (list, create), /api/customers, /api/employees
+// User instruction: "12. Orders (/orders, /orders/[id]): Order creation (Select customer, add products from catalog with quantity/price/discounts, tax calculation, total computation, notes), Order list (Search, filter by status/date/customer/sales rep, sorting, status badges, pagination), Order detail (Full order breakdown, line items table, customer & sales rep info, status update workflow [Draft -> Submitted -> Approved -> In Production -> Shipped -> Delivered / Cancelled], order timeline/audit history, PDF invoice generation/download simulator)."
+// Importers/callers: Next.js App Router (/orders), AppShell, Sidebar navigation
+// Affected API: GET /api/orders, POST /api/orders, GET /api/customers, GET /api/employees
 // Data schemas: Order, OrderItem, OrderStatus, CreateOrderPayload, OrderQueryParams, OrderListResponse
 
 'use client';
@@ -14,8 +14,13 @@ import { employeesApi } from '@/lib/api/employees';
 import { useAuth } from '@/providers/auth-provider';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
+import { PageHeader } from '@/components/ui/page-header';
+import { StatusBadge } from '@/components/ui/status-badge';
+import { StatCard } from '@/components/ui/stat-card';
+import { EmptyState } from '@/components/ui/empty-state';
+import { CurrencyDisplay } from '@/components/ui/currency-display';
 import {
   Dialog,
   DialogContent,
@@ -39,13 +44,20 @@ import {
   DollarSign,
   Calendar,
   User as UserIcon,
-  CheckCircle,
-  XCircle,
+  Search,
+  Filter,
+  RefreshCw,
+  ChevronLeft,
+  ChevronRight,
+  Receipt,
+  FileSpreadsheet,
+  PackageCheck,
+  Building2,
   Clock,
-  Ban,
-  ArrowLeft,
+  Sparkles,
 } from 'lucide-react';
 import type { OrderStatus, CreateOrderItemPayload } from '@/types/order.types';
+import { formatDate } from '@/lib/format';
 
 export default function OrdersPage() {
   const router = useRouter();
@@ -60,6 +72,7 @@ export default function OrdersPage() {
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [startDate, setStartDate] = useState<string>('');
   const [endDate, setEndDate] = useState<string>('');
+  const [searchQuery, setSearchQuery] = useState<string>('');
 
   // Create Order Modal state
   const [createOpen, setCreateOpen] = useState(false);
@@ -74,7 +87,7 @@ export default function OrdersPage() {
   const limit = 10;
 
   // 1. Fetch Orders query
-  const { data: ordersData, isLoading: ordersLoading } = useQuery({
+  const { data: ordersData, isLoading: ordersLoading, error } = useQuery({
     queryKey: [
       'orders',
       page,
@@ -96,12 +109,14 @@ export default function OrdersPage() {
         endDate: endDate || undefined,
       }),
     staleTime: 5000,
+    enabled: !!user,
   });
 
   // 2. Fetch Customers for dropdowns
   const { data: customersData } = useQuery({
     queryKey: ['customers-list-dropdown'],
     queryFn: () => customersApi.list({ limit: 100 }),
+    enabled: !!user,
     staleTime: 30000,
   });
 
@@ -109,13 +124,13 @@ export default function OrdersPage() {
   const { data: employeesData } = useQuery({
     queryKey: ['employees-list-dropdown'],
     queryFn: () => employeesApi.list({ limit: 100 }),
-    enabled: isAdmin,
+    enabled: !!user && isAdmin,
     staleTime: 30000,
   });
 
   // Active customers list
   const activeCustomers = (customersData?.items || []).filter(
-    (c) => c.status === 'ACTIVE',
+    (c) => c.status === 'ACTIVE'
   );
 
   // Line item helpers
@@ -131,7 +146,7 @@ export default function OrdersPage() {
   const handleItemChange = (
     index: number,
     field: keyof CreateOrderItemPayload,
-    value: any,
+    value: any
   ) => {
     setItems((prev) => {
       const next = [...prev];
@@ -156,6 +171,7 @@ export default function OrdersPage() {
       if (!items || items.length === 0) {
         throw new Error('Please add at least one item');
       }
+
       for (const item of items) {
         if (!item.productName.trim()) {
           throw new Error('Product name is required for all items');
@@ -189,371 +205,432 @@ export default function OrdersPage() {
     },
     onError: (err: any) => {
       setCreateError(
-        err.response?.data?.message || err.message || 'Failed to create order',
+        err.response?.data?.message || err.message || 'Failed to create order'
       );
     },
   });
 
-  // Status badge renderer
-  const renderStatusBadge = (status: OrderStatus) => {
-    switch (status) {
-      case 'PENDING':
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300">
-            <Clock className="size-3" /> Pending
-          </span>
-        );
-      case 'APPROVED':
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-300">
-            <CheckCircle className="size-3" /> Approved
-          </span>
-        );
-      case 'REJECTED':
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-rose-100 text-rose-800 dark:bg-rose-900/50 dark:text-rose-300">
-            <XCircle className="size-3" /> Rejected
-          </span>
-        );
-      case 'COMPLETED':
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800 dark:bg-emerald-900/50 dark:text-emerald-300">
-            <CheckCircle className="size-3" /> Completed
-          </span>
-        );
-      case 'CANCELLED':
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-400">
-            <Ban className="size-3" /> Cancelled
-          </span>
-        );
-      default:
-        return <span>{status}</span>;
-    }
-  };
+  const orderList = ordersData?.items || [];
+
+  // Filter client-side search query
+  const filteredOrders = orderList.filter((order) => {
+    if (!searchQuery) return true;
+    const q = searchQuery.toLowerCase();
+    const customerName =
+      typeof order.customer === 'object'
+        ? (order.customer?.customerName || order.customer?.businessName || '').toLowerCase()
+        : '';
+    const orderId = (order._id || '').toLowerCase();
+    const notesStr = (order.notes || '').toLowerCase();
+    return customerName.includes(q) || orderId.includes(q) || notesStr.includes(q);
+  });
+
+  // Aggregate stats
+  const totalVolume = orderList.reduce((acc, curr) => acc + (curr.totalAmount || 0), 0);
+  const pendingCount = orderList.filter((o) => o.status === 'PENDING').length;
+  const completedCount = orderList.filter((o) => o.status === 'COMPLETED').length;
 
   return (
-    <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950 p-6">
-      <div className="max-w-7xl mx-auto space-y-6">
-        {/* Header */}
-        <div className="flex flex-col sm:row sm:items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => router.push('/dashboard')}
-              className="gap-1.5"
-            >
-              <ArrowLeft className="size-4" /> Dashboard
-            </Button>
-            <div>
-              <h1 className="text-2xl font-bold tracking-tight text-zinc-900 dark:text-zinc-100">
-                {isAdmin ? 'Order Management' : 'My Orders'}
-              </h1>
-              <p className="text-sm text-zinc-500">
-                {isAdmin
-                  ? 'Review, approve, and track all customer orders'
-                  : 'Create and track orders for your assigned customers'}
-              </p>
+    <div className="space-y-6">
+      {/* Header */}
+      <PageHeader
+        title={isAdmin ? 'Commercial Order Operations' : 'My Sales Orders'}
+        subtitle={
+          isAdmin
+            ? 'Review, approve, and track wholesale orders, billing workflows, and fulfillment milestones.'
+            : 'Draft and submit line-item purchase orders for your portfolio of clients.'
+        }
+      >
+        <Button
+          onClick={() => {
+            setCreateError(null);
+            setCreateOpen(true);
+          }}
+          className="gap-1.5 text-xs bg-primary text-primary-foreground font-semibold hover:bg-primary/90"
+        >
+          <Plus className="size-3.5" />
+          <span>Create New Order</span>
+        </Button>
+      </PageHeader>
+
+      {/* High-Level Order Metrics */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
+        <StatCard
+          title="Total Orders"
+          value={ordersData?.total || 0}
+          icon={ShoppingCart}
+          description="Total orders in pipeline"
+        />
+        <StatCard
+          title="Pipeline Volume"
+          value={<CurrencyDisplay amount={totalVolume} />}
+          icon={Receipt}
+          description="Gross order value on page"
+        />
+        <StatCard
+          title="Pending Approval"
+          value={pendingCount}
+          icon={Clock}
+          description="Awaiting administrative sign-off"
+        />
+        <StatCard
+          title="Completed Orders"
+          value={completedCount}
+          icon={PackageCheck}
+          description="Delivered & finalized"
+        />
+      </div>
+
+      {/* Filter and Status Toolbar */}
+      <Card className="bg-card border-border">
+        <CardContent className="p-4 space-y-3">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-2 text-xs font-semibold text-foreground">
+              <Filter className="size-3.5 text-primary" />
+              <span>Refine Commercial Orders</span>
+            </div>
+
+            {/* Quick Status Chips */}
+            <div className="flex flex-wrap items-center gap-1.5 text-xs">
+              {(['all', 'PENDING', 'APPROVED', 'COMPLETED', 'CANCELLED'] as const).map((st) => (
+                <button
+                  key={st}
+                  onClick={() => {
+                    setStatusFilter(st);
+                    setPage(1);
+                  }}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
+                    statusFilter === st
+                      ? 'bg-primary text-primary-foreground font-semibold'
+                      : 'bg-muted/40 text-muted-foreground hover:text-foreground hover:bg-muted/70'
+                  }`}
+                >
+                  {st === 'all' ? 'All Statuses' : st.charAt(0) + st.slice(1).toLowerCase()}
+                </button>
+              ))}
             </div>
           </div>
 
-          <Button
-            onClick={() => {
-              setCreateError(null);
-              setCreateOpen(true);
-            }}
-            className="gap-2 bg-emerald-600 hover:bg-emerald-700 text-white"
-          >
-            <Plus className="size-4" /> Create Order
-          </Button>
-        </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 text-xs pt-1 border-t border-border/60">
+            {/* Search Input */}
+            <div className="relative">
+              <Label htmlFor="orderSearch" className="text-[11px] text-muted-foreground">
+                Search Orders
+              </Label>
+              <div className="relative mt-1">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                <Input
+                  id="orderSearch"
+                  placeholder="Customer, order ID, note..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="h-8 pl-8 text-xs bg-background border-border"
+                />
+              </div>
+            </div>
 
-        {/* Filter Bar */}
-        <Card>
-          <CardContent className="p-4">
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
-              {/* Employee filter for Admin */}
-              {isAdmin && (
-                <div>
-                  <Label className="text-xs text-zinc-500 mb-1 block">Employee</Label>
-                  <Select
-                    value={employeeFilter}
-                    onValueChange={(val: string) => {
-                      setEmployeeFilter(val);
-                      setPage(1);
-                    }}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="All Employees" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">All Employees</SelectItem>
-                      {(employeesData?.items || []).map((emp) => (
-                        <SelectItem key={emp._id} value={emp._id}>
-                          {emp.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
+            {/* Customer Dropdown */}
+            <div>
+              <Label htmlFor="customerFilter" className="text-[11px] text-muted-foreground">
+                Account
+              </Label>
+              <Select
+                value={customerFilter}
+                onValueChange={(v: string) => {
+                  setCustomerFilter(v);
+                  setPage(1);
+                }}
+              >
+                <SelectTrigger id="customerFilter" className="mt-1 h-8 text-xs bg-background border-border">
+                  <SelectValue placeholder="All Accounts" />
+                </SelectTrigger>
+                <SelectContent className="bg-popover border-border">
+                  <SelectItem value="all">All Accounts</SelectItem>
+                  {customersData?.items?.map((c) => (
+                    <SelectItem key={c._id} value={c._id}>
+                      {c.customerName || c.businessName}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
 
-              {/* Customer filter */}
+            {/* Sales Rep (Admin Only) */}
+            {isAdmin && (
               <div>
-                <Label className="text-xs text-zinc-500 mb-1 block">Customer</Label>
+                <Label htmlFor="employeeFilter" className="text-[11px] text-muted-foreground">
+                  Sales Representative
+                </Label>
                 <Select
-                  value={customerFilter}
-                  onValueChange={(val: string) => {
-                    setCustomerFilter(val);
+                  value={employeeFilter}
+                  onValueChange={(v: string) => {
+                    setEmployeeFilter(v);
                     setPage(1);
                   }}
                 >
-                  <SelectTrigger>
-                    <SelectValue placeholder="All Customers" />
+                  <SelectTrigger id="employeeFilter" className="mt-1 h-8 text-xs bg-background border-border">
+                    <SelectValue placeholder="All Representatives" />
                   </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Customers</SelectItem>
-                    {(customersData?.items || []).map((cust) => (
-                      <SelectItem key={cust._id} value={cust._id}>
-                        {cust.customerName} ({cust.businessName})
+                  <SelectContent className="bg-popover border-border">
+                    <SelectItem value="all">All Representatives</SelectItem>
+                    {employeesData?.items?.map((emp) => (
+                      <SelectItem key={emp._id} value={emp._id}>
+                        {emp.name}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               </div>
+            )}
 
-              {/* Status filter */}
-              <div>
-                <Label className="text-xs text-zinc-500 mb-1 block">Status</Label>
-                <Select
-                  value={statusFilter}
-                  onValueChange={(val: string) => {
-                    setStatusFilter(val);
-                    setPage(1);
-                  }}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="All Statuses" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Statuses</SelectItem>
-                    <SelectItem value="PENDING">Pending</SelectItem>
-                    <SelectItem value="APPROVED">Approved</SelectItem>
-                    <SelectItem value="COMPLETED">Completed</SelectItem>
-                    <SelectItem value="REJECTED">Rejected</SelectItem>
-                    <SelectItem value="CANCELLED">Cancelled</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {/* Start Date */}
-              <div>
-                <Label className="text-xs text-zinc-500 mb-1 block">Start Date</Label>
-                <Input
-                  type="date"
-                  value={startDate}
-                  onChange={(e) => {
-                    setStartDate(e.target.value);
-                    setPage(1);
-                  }}
-                />
-              </div>
-
-              {/* End Date */}
-              <div>
-                <Label className="text-xs text-zinc-500 mb-1 block">End Date</Label>
-                <Input
-                  type="date"
-                  value={endDate}
-                  onChange={(e) => {
-                    setEndDate(e.target.value);
-                    setPage(1);
-                  }}
-                />
-              </div>
+            {/* Date Range */}
+            <div>
+              <Label htmlFor="startDate" className="text-[11px] text-muted-foreground">
+                From Date
+              </Label>
+              <Input
+                id="startDate"
+                type="date"
+                value={startDate}
+                onChange={(e) => {
+                  setStartDate(e.target.value);
+                  setPage(1);
+                }}
+                className="mt-1 h-8 text-xs bg-background border-border"
+              />
             </div>
-          </CardContent>
-        </Card>
+          </div>
+        </CardContent>
+      </Card>
 
-        {/* Orders Table */}
-        <Card>
-          <CardHeader className="py-4 px-6 border-b border-zinc-200 dark:border-zinc-800">
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-base font-semibold">
-                Orders List ({ordersData?.total || 0})
-              </CardTitle>
+      {/* Loading & Error States */}
+      {ordersLoading && (
+        <div className="flex flex-col items-center justify-center p-16 text-center space-y-3">
+          <RefreshCw className="size-8 animate-spin text-primary" />
+          <p className="font-semibold text-foreground text-sm">Loading purchase orders...</p>
+        </div>
+      )}
+
+      {error && (
+        <EmptyState
+          icon={ShoppingCart}
+          title="Failed to Load Orders"
+          description="Could not synchronize commercial order records from the server."
+        />
+      )}
+
+      {/* Orders Table */}
+      {!ordersLoading && !error && (
+        <Card className="bg-card border-border overflow-hidden">
+          {filteredOrders.length === 0 ? (
+            <div className="p-8">
+              <EmptyState
+                icon={ShoppingCart}
+                title="No Matching Orders Found"
+                description="No purchase orders match your current filters or search terms."
+                action={{
+                  label: 'Clear Filters',
+                  onClick: () => {
+                    setCustomerFilter('all');
+                    setEmployeeFilter('all');
+                    setStatusFilter('all');
+                    setStartDate('');
+                    setEndDate('');
+                    setSearchQuery('');
+                  },
+                }}
+              />
             </div>
-          </CardHeader>
-          <CardContent className="p-0">
-            {ordersLoading ? (
-              <div className="p-8 text-center text-zinc-500">Loading orders...</div>
-            ) : !ordersData?.items || ordersData.items.length === 0 ? (
-              <div className="p-8 text-center text-zinc-500">
-                No orders found matching the filter criteria.
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm">
-                  <thead className="bg-zinc-100 dark:bg-zinc-900 border-b border-zinc-200 dark:border-zinc-800 text-xs font-semibold text-zinc-600 dark:text-zinc-400 uppercase">
-                    <tr>
-                      <th className="py-3 px-4">Date</th>
-                      <th className="py-3 px-4">Customer</th>
-                      {isAdmin && <th className="py-3 px-4">Employee</th>}
-                      <th className="py-3 px-4 text-center">Items</th>
-                      <th className="py-3 px-4 text-right">Total Amount</th>
-                      <th className="py-3 px-4 text-center">Status</th>
-                      <th className="py-3 px-4 text-right">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
-                    {ordersData.items.map((order) => (
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead className="bg-muted/30 border-b border-border text-muted-foreground uppercase tracking-wider font-semibold">
+                  <tr>
+                    <th className="py-3 px-4">Order ID & Date</th>
+                    <th className="py-3 px-3">Customer Account</th>
+                    <th className="py-3 px-3">Sales Representative</th>
+                    <th className="py-3 px-3">Line Items</th>
+                    <th className="py-3 px-3 text-right">Order Total</th>
+                    <th className="py-3 px-3 text-center">Fulfillment Status</th>
+                    <th className="py-3 px-4 text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border/60">
+                  {filteredOrders.map((order) => {
+                    const customerName =
+                      typeof order.customer === 'object'
+                        ? order.customer?.customerName || order.customer?.businessName || 'Customer Account'
+                        : 'Customer Account';
+                    const employeeName =
+                      typeof order.employee === 'object' ? order.employee?.name : 'Representative';
+                    const itemsSummary = (order.items || [])
+                      .map((it) => `${it.productName} (x${it.quantity})`)
+                      .join(', ');
+
+                    return (
                       <tr
                         key={order._id}
-                        className="hover:bg-zinc-50 dark:hover:bg-zinc-900/50 transition-colors"
+                        className="hover:bg-muted/30 transition-colors cursor-pointer group"
+                        onClick={() => router.push(`/orders/${order._id}`)}
                       >
-                        <td className="py-3 px-4 font-medium text-zinc-900 dark:text-zinc-100 whitespace-nowrap">
-                          {new Date(order.orderDate).toLocaleDateString()}
-                        </td>
                         <td className="py-3 px-4">
-                          <div className="font-medium text-zinc-900 dark:text-zinc-100">
-                            {order.customer?.customerName || 'N/A'}
+                          <div className="font-mono font-bold text-foreground group-hover:text-primary transition-colors">
+                            #{order._id.slice(-6).toUpperCase()}
                           </div>
-                          <div className="text-xs text-zinc-500">
-                            {order.customer?.businessName}
+                          <div className="text-[11px] text-muted-foreground flex items-center gap-1 mt-0.5">
+                            <Calendar className="size-3" />
+                            {formatDate(order.orderDate || order.createdAt)}
                           </div>
                         </td>
-                        {isAdmin && (
-                          <td className="py-3 px-4">
-                            <div className="text-zinc-900 dark:text-zinc-100">
-                              {order.employee?.name || 'Unassigned'}
+
+                        <td className="py-3 px-3">
+                          <div className="font-semibold text-foreground font-heading">
+                            {customerName}
+                          </div>
+                          {typeof order.customer === 'object' && (order.customer as any)?.email && (
+                            <div className="text-[11px] text-muted-foreground">
+                              {(order.customer as any).email}
                             </div>
-                            <div className="text-xs text-zinc-500">
-                              {order.employee?.email}
-                            </div>
-                          </td>
-                        )}
-                        <td className="py-3 px-4 text-center">
-                          <span className="inline-flex items-center justify-center px-2 py-0.5 text-xs font-medium rounded bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300">
-                            {order.items?.length || 0} item{order.items?.length === 1 ? '' : 's'}
+                          )}
+                        </td>
+
+                        <td className="py-3 px-3 text-muted-foreground">
+                          <div className="text-foreground font-medium">{employeeName}</div>
+                        </td>
+
+                        <td className="py-3 px-3 max-w-xs truncate text-muted-foreground">
+                          <span className="font-mono text-foreground font-medium mr-1.5">
+                            {order.items?.length || 0} item{(order.items?.length || 0) !== 1 ? 's' : ''}:
                           </span>
+                          <span>{itemsSummary || 'Standard SKU'}</span>
                         </td>
-                        <td className="py-3 px-4 text-right font-semibold text-zinc-900 dark:text-zinc-100 whitespace-nowrap">
-                          ${Number(order.totalAmount || 0).toFixed(2)}
+
+                        <td className="py-3 px-3 text-right font-mono font-bold text-foreground text-sm">
+                          <CurrencyDisplay amount={order.totalAmount} />
                         </td>
-                        <td className="py-3 px-4 text-center whitespace-nowrap">
-                          {renderStatusBadge(order.status)}
+
+                        <td className="py-3 px-3 text-center">
+                          <StatusBadge status={order.status} />
                         </td>
-                        <td className="py-3 px-4 text-right whitespace-nowrap">
+
+                        <td className="py-3 px-4 text-right" onClick={(e) => e.stopPropagation()}>
                           <Button
-                            variant="outline"
+                            variant="ghost"
                             size="sm"
                             onClick={() => router.push(`/orders/${order._id}`)}
-                            className="gap-1.5"
+                            className="gap-1 text-xs text-primary hover:text-primary font-semibold"
                           >
-                            <Eye className="size-3.5" /> Details
+                            <Eye className="size-3.5" />
+                            <span>View</span>
                           </Button>
                         </td>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-
-            {/* Pagination Controls */}
-            {ordersData && ordersData.totalPages > 1 && (
-              <div className="flex items-center justify-between p-4 border-t border-zinc-200 dark:border-zinc-800">
-                <p className="text-xs text-zinc-500">
-                  Showing page {ordersData.page} of {ordersData.totalPages} ({ordersData.total} total orders)
-                </p>
-                <div className="flex items-center gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={ordersData.page <= 1}
-                    onClick={() => setPage((p) => Math.max(p - 1, 1))}
-                  >
-                    Previous
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={ordersData.page >= ordersData.totalPages}
-                    onClick={() => setPage((p) => p + 1)}
-                  >
-                    Next
-                  </Button>
-                </div>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Create Order Dialog */}
-      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <ShoppingCart className="size-5 text-emerald-600" /> Create New Order
-            </DialogTitle>
-            <DialogDescription>
-              Record an order with products, quantities, and pricing. Totals are calculated authoritatively by the backend.
-            </DialogDescription>
-          </DialogHeader>
-
-          {createError && (
-            <div className="p-3 text-sm rounded bg-rose-50 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300 border border-rose-200 dark:border-rose-900">
-              {createError}
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
           )}
 
-          <div className="space-y-4 py-2">
+          {/* Pagination Controls */}
+          {ordersData && ordersData.totalPages > 1 && (
+            <div className="flex items-center justify-between border-t border-border px-4 py-3 text-xs">
+              <p className="text-muted-foreground">
+                Page <span className="text-foreground font-semibold font-mono">{ordersData.page}</span> of{' '}
+                <span className="text-foreground font-semibold font-mono">{ordersData.totalPages}</span> ·{' '}
+                <span className="text-foreground font-semibold font-mono">{ordersData.total}</span> total orders
+              </p>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={page === 1}
+                  onClick={() => setPage((p) => p - 1)}
+                  className="gap-1 text-xs text-foreground"
+                >
+                  <ChevronLeft className="size-3.5" /> Previous
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={page === ordersData.totalPages}
+                  onClick={() => setPage((p) => p + 1)}
+                  className="gap-1 text-xs text-foreground"
+                >
+                  Next <ChevronRight className="size-3.5" />
+                </Button>
+              </div>
+            </div>
+          )}
+        </Card>
+      )}
+
+      {/* Create Order Dialog */}
+      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto bg-card border-border">
+          <DialogHeader>
+            <DialogTitle className="text-foreground font-heading flex items-center gap-2">
+              <ShoppingCart className="size-4 text-primary" />
+              Draft New Commercial Order
+            </DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground">
+              Select an active customer account, configure order line items, and submit for fulfillment review.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 text-xs">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {/* Customer Selection */}
               <div>
-                <Label className="text-xs font-medium mb-1 block">Customer *</Label>
+                <Label htmlFor="create-customer" className="text-xs text-foreground">
+                  Target Customer Account <span className="text-rose-400">*</span>
+                </Label>
                 <Select
                   value={selectedCustomerId}
                   onValueChange={setSelectedCustomerId}
                 >
-                  <SelectTrigger>
+                  <SelectTrigger id="create-customer" className="mt-1 h-9 text-xs bg-background border-border">
                     <SelectValue placeholder="Select active customer" />
                   </SelectTrigger>
-                  <SelectContent>
-                    {activeCustomers.map((cust) => (
-                      <SelectItem key={cust._id} value={cust._id}>
-                        {cust.customerName} ({cust.businessName})
+                  <SelectContent className="bg-popover border-border">
+                    {activeCustomers.map((c) => (
+                      <SelectItem key={c._id} value={c._id}>
+                        {c.customerName || c.businessName}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               </div>
 
-              {/* Order Date */}
               <div>
-                <Label className="text-xs font-medium mb-1 block">Order Date *</Label>
+                <Label htmlFor="create-orderDate" className="text-xs text-foreground">
+                  Order Date <span className="text-rose-400">*</span>
+                </Label>
                 <Input
+                  id="create-orderDate"
                   type="date"
                   value={orderDate}
                   onChange={(e) => setOrderDate(e.target.value)}
+                  className="mt-1 h-9 text-xs bg-background border-border font-mono"
                 />
               </div>
             </div>
 
-            {/* Line Items Table */}
-            <div className="space-y-2 border-t border-zinc-200 dark:border-zinc-800 pt-4">
+            {/* Line Items Section */}
+            <div className="space-y-2 border-t border-border pt-4">
               <div className="flex items-center justify-between">
-                <Label className="text-sm font-semibold">Order Items *</Label>
+                <Label className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                  <FileSpreadsheet className="size-3.5 text-primary" />
+                  Order Line Items
+                </Label>
                 <Button
                   type="button"
                   variant="outline"
                   size="sm"
                   onClick={handleAddItem}
-                  className="gap-1 text-xs"
+                  className="gap-1 text-xs text-foreground font-medium"
                 >
-                  <Plus className="size-3.5" /> Add Product
+                  <Plus className="size-3 text-primary" />
+                  <span>Add Line Item</span>
                 </Button>
               </div>
 
@@ -561,107 +638,108 @@ export default function OrdersPage() {
                 {items.map((item, idx) => (
                   <div
                     key={idx}
-                    className="grid grid-cols-12 gap-2 items-center bg-zinc-50 dark:bg-zinc-900 p-2.5 rounded-lg border border-zinc-200 dark:border-zinc-800"
+                    className="grid grid-cols-12 gap-2 p-3 bg-background rounded-lg border border-border items-end"
                   >
-                    <div className="col-span-5">
-                      <Label className="text-[10px] text-zinc-500 mb-0.5 block">Product Name *</Label>
+                    <div className="col-span-12 sm:col-span-5">
+                      <Label className="text-[11px] text-muted-foreground">Product Description</Label>
                       <Input
-                        placeholder="e.g. Premium Widget X"
+                        placeholder="Item name / SKU"
                         value={item.productName}
-                        onChange={(e) =>
-                          handleItemChange(idx, 'productName', e.target.value)
-                        }
+                        onChange={(e) => handleItemChange(idx, 'productName', e.target.value)}
+                        className="mt-1 h-8 text-xs bg-card border-border"
                       />
                     </div>
-                    <div className="col-span-2">
-                      <Label className="text-[10px] text-zinc-500 mb-0.5 block">Quantity *</Label>
+
+                    <div className="col-span-4 sm:col-span-2">
+                      <Label className="text-[11px] text-muted-foreground">Qty</Label>
                       <Input
                         type="number"
                         min="1"
-                        step="1"
                         value={item.quantity}
-                        onChange={(e) =>
-                          handleItemChange(idx, 'quantity', e.target.value)
-                        }
+                        onChange={(e) => handleItemChange(idx, 'quantity', e.target.value)}
+                        className="mt-1 h-8 text-xs bg-card border-border font-mono"
                       />
                     </div>
-                    <div className="col-span-2">
-                      <Label className="text-[10px] text-zinc-500 mb-0.5 block">Unit Price ($) *</Label>
+
+                    <div className="col-span-5 sm:col-span-3">
+                      <Label className="text-[11px] text-muted-foreground">Unit Price (₹)</Label>
                       <Input
                         type="number"
-                        min="0"
                         step="0.01"
+                        min="0"
                         value={item.unitPrice}
-                        onChange={(e) =>
-                          handleItemChange(idx, 'unitPrice', e.target.value)
-                        }
+                        onChange={(e) => handleItemChange(idx, 'unitPrice', e.target.value)}
+                        className="mt-1 h-8 text-xs bg-card border-border font-mono"
                       />
                     </div>
-                    <div className="col-span-2 text-right">
-                      <Label className="text-[10px] text-zinc-500 mb-0.5 block">Total ($)</Label>
-                      <div className="py-2 text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-                        ${(
-                          Math.round(
-                            (Number(item.quantity) || 0) *
-                              (Number(item.unitPrice) || 0) *
-                              100,
-                          ) / 100
-                        ).toFixed(2)}
+
+                    <div className="col-span-3 sm:col-span-2 flex items-center justify-end gap-2 pb-0.5">
+                      <div className="text-right font-mono font-semibold text-foreground text-xs hidden sm:block">
+                        <CurrencyDisplay
+                          amount={(Number(item.quantity) || 0) * (Number(item.unitPrice) || 0)}
+                        />
                       </div>
-                    </div>
-                    <div className="col-span-1 flex justify-end">
                       <Button
                         type="button"
                         variant="ghost"
-                        size="sm"
+                        size="icon-xs"
                         disabled={items.length <= 1}
                         onClick={() => handleRemoveItem(idx)}
-                        className="text-rose-500 hover:text-rose-700 hover:bg-rose-50 dark:hover:bg-rose-950 p-1 size-8"
+                        className="size-8 text-muted-foreground hover:text-rose-400"
+                        title="Remove item"
                       >
-                        <Trash2 className="size-4" />
+                        <Trash2 className="size-3.5" />
                       </Button>
                     </div>
                   </div>
                 ))}
               </div>
 
-              {/* Live summary */}
-              <div className="flex justify-end pt-3">
-                <div className="text-right p-3 rounded-lg bg-zinc-100 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 min-w-[200px]">
-                  <p className="text-xs text-zinc-500">Calculated Order Total</p>
-                  <p className="text-xl font-bold text-emerald-600 dark:text-emerald-400">
-                    ${calculatedTotal.toFixed(2)}
-                  </p>
-                </div>
+              {/* Order Total Preview Box */}
+              <div className="p-3 bg-muted/30 rounded-lg border border-border flex items-center justify-between">
+                <span className="text-xs text-muted-foreground font-medium">
+                  Total Order Value (Calculated):
+                </span>
+                <span className="text-base font-bold font-mono text-primary">
+                  <CurrencyDisplay amount={calculatedTotal} />
+                </span>
               </div>
             </div>
 
-            {/* Notes */}
-            <div className="border-t border-zinc-200 dark:border-zinc-800 pt-3">
-              <Label className="text-xs font-medium mb-1 block">Notes / Special Instructions</Label>
+            <div>
+              <Label htmlFor="create-notes" className="text-xs text-foreground">
+                Delivery Instructions & Commercial Notes
+              </Label>
               <Input
-                placeholder="Optional notes or delivery instructions"
+                id="create-notes"
+                placeholder="Shipping instructions, payment terms, or reference numbers"
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
+                className="mt-1 h-9 text-xs bg-background border-border"
               />
             </div>
+
+            {createError && (
+              <p className="text-xs text-rose-400 p-2.5 bg-rose-500/10 border border-rose-500/20 rounded-lg">
+                {createError}
+              </p>
+            )}
           </div>
 
-          <DialogFooter className="gap-2">
+          <DialogFooter className="pt-3">
             <Button
-              type="button"
               variant="outline"
               onClick={() => setCreateOpen(false)}
+              className="text-xs text-foreground"
             >
               Cancel
             </Button>
             <Button
-              type="button"
-              disabled={createMutation.isPending}
               onClick={() => createMutation.mutate()}
-              className="bg-emerald-600 hover:bg-emerald-700 text-white"
+              disabled={createMutation.isPending}
+              className="text-xs bg-primary text-primary-foreground font-semibold hover:bg-primary/90"
             >
-              {createMutation.isPending ? 'Submitting...' : 'Submit Order'}
+              {createMutation.isPending ? 'Submitting Order...' : 'Submit Commercial Order'}
             </Button>
           </DialogFooter>
         </DialogContent>
